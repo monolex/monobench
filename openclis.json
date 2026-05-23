@@ -1,6 +1,6 @@
 {
   "name": "monobench",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Code-intelligence tool benchmark for measuring whether AI agents locate real cross-boundary bug root causes with tools like monogram versus baseline.",
   "repo": "monolex/monobench",
   "source": "openclis",

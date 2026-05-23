@@ -126,7 +126,9 @@ fn main() {
             println!("{:<14} {}", "TOOL", "DESC");
             for t in list_dir_names(&root.join("harness/tools")) {
                 if t == "_TEMPLATE" { continue; }
-                let desc = read_json(&root.join(format!("harness/tools/{t}/tool.json"))).get("desc").and_then(|x| x.as_str()).unwrap_or("").chars().take(90).collect::<String>();
+                let tool_json = root.join("harness/tools").join(&t).join("tool.json");
+                if !tool_json.is_file() { continue; }
+                let desc = read_json(&tool_json).get("desc").and_then(|x| x.as_str()).unwrap_or("").chars().take(90).collect::<String>();
                 println!("{:<14} {}", t, desc);
             }
             println!("(define your own: cp -r harness/tools/_TEMPLATE harness/tools/<name> && edit tool.json)");
