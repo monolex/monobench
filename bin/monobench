@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# monobench — code-intelligence-tool benchmark (mono-series CLI).
+# No args → prints initiate.md (full help), per the OpenCLIs initiate/ convention.
+set -uo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CMD="${1:-}"; [ $# -gt 0 ] && shift || true
+
+die(){ echo "monobench: $*" >&2; exit 1; }
+
+case "$CMD" in
+  ""|help|-h|--help)
+    [ -f "$ROOT/initiate/initiate.md" ] && cat "$ROOT/initiate/initiate.md" || echo "monobench (no initiate.md found)"
+    ;;
+
+  list)  # list instances + admission note
+    printf "%-30s %s\n" "INSTANCE" "TITLE"
+    for d in "$ROOT"/instances/*/; do id=$(basename "$d"); [ "$id" = "_TEMPLATE" ] && continue
+      title=$(node -e "try{console.log(require('$d/instance.json').title)}catch(e){console.log('?')}" 2>/dev/null)
+      printf "%-30s %s\n" "$id" "$title"
+    done
+    ;;
+
+  tools)  # list available tool adapters (the arms you can run)
+    printf "%-14s %s\n" "TOOL" "DESC"
+    for d in "$ROOT"/harness/tools/*/; do t=$(basename "$d"); [ "$t" = "_TEMPLATE" ] && continue
+      desc=$(node -e "try{console.log((require('$d/tool.json').desc||'').slice(0,90))}catch(e){console.log('?')}" 2>/dev/null)
+      printf "%-14s %s\n" "$t" "$desc"
+    done
+    echo "(define your own: cp -r harness/tools/_TEMPLATE harness/tools/<name> && edit tool.json)"
+    ;;
+
+  status)  # live status of an instance's runs (clean view instead of ad-hoc greps)
+    ID="${1:?usage: monobench status <id>}"; D="$ROOT/results/$ID"; shopt -s nullglob
+    echo "status: $ID"
+    for f in "$D"/*.jsonl; do b=$(basename "$f" .jsonl)
+      if grep -q '"type":"result"' "$f" 2>/dev/null; then st="done"; else st="running ($(grep -c '"type":"tool_use"' "$f" 2>/dev/null)c)"; fi
+      printf "  %-34s %s\n" "$b" "$st"; done
+    for f in "$D"/*.answer.txt; do b=$(basename "$f" .answer.txt); [ -f "$D/$b.jsonl" ] && continue; printf "  %-34s %s\n" "$b" "done (niia/codex)"; done
+    for f in "$D"/*.forfeit; do printf "  %-34s %s\n" "$(basename "$f" .forfeit)" "FORFEIT"; done
+    W="${MONOBENCH_WORK:-$HOME/.monobench-work}"
+    echo "  active → claude:$(pgrep -f 'claude -p'|wc -l|tr -d ' ') codex:$(pgrep -f 'codex exec'|wc -l|tr -d ' ') worktrees:$(ls -d "$W"/wt/*/ 2>/dev/null|wc -l|tr -d ' ')"
+    ;;
+
+  show)  # show the task (symptom). --spoil also prints the gated ground truth.
+    ID="${1:?usage: monobench show <id> [--spoil]}"
+    [ -d "$ROOT/instances/$ID" ] || die "no instance '$ID'"
+    cat "$ROOT/instances/$ID/symptom.md"
+    if [ "${2:-}" = "--spoil" ]; then echo; echo "════ GROUND TRUTH (spoiler) ════"; cat "$ROOT/instances/$ID/ground_truth.md"; fi
+    ;;
+
+  run)   # run ONE arm of ONE instance:  monobench run <id> <arm> [n]
+    exec "$ROOT/harness/run.sh" "$@"
+    ;;
+
+  matrix)  # PARALLEL model×tool matrix (git-worktree isolated):
+           #   monobench matrix <id> [--tools a,b] [--models x,y] [--runs N] [--jobs J]
+    ID="${1:?usage: monobench matrix <id> [--tools a,b] [--models x,y] [--runs N] [--jobs J]}"; shift || true
+    TOOLS=baseline,monogram; MODELS=opus; RUNS=1; JOBS=2
+    while [ $# -gt 0 ]; do case "$1" in
+      --tools)  TOOLS="$2";  shift 2;; --models) MODELS="$2"; shift 2;;
+      --runs)   RUNS="$2";   shift 2;; --jobs)   JOBS="$2";   shift 2;; *) shift;; esac; done
+    combos=""; IFS=, read -ra TS <<<"$TOOLS"; IFS=, read -ra MS <<<"$MODELS"
+    for t in "${TS[@]}"; do for m in "${MS[@]}"; do for r in $(seq 1 "$RUNS"); do combos+="$t $m $r"$'\n'; done; done; done
+    n=$(printf '%s' "$combos" | grep -c .)
+    echo "matrix $ID · {$TOOLS} × {$MODELS} × runs=$RUNS = $n runs · jobs=$JOBS · git-worktree isolated"
+    export MONOBENCH_ISOLATE=worktree MB_ID="$ID" MB_RUNSH="$ROOT/harness/run.sh"
+    printf '%s' "$combos" | xargs -P "$JOBS" -L1 bash -c \
+      'MONOBENCH_MODEL="$1" "$MB_RUNSH" "$MB_ID" "$0" "$2" >/dev/null 2>&1; echo "  ✓ $0 / $1 r$2"'
+    echo "── matrix done ──"; "$ROOT/bin/monobench" report "$ID"
+    ;;
+
+  grade) # grade every run of an instance:  monobench grade <id>
+    ID="${1:?usage: monobench grade <id>}"
+    shopt -s nullglob
+    for f in "$ROOT/results/$ID"/*.jsonl; do node "$ROOT/harness/grade.mjs" "$ROOT/instances/$ID/instance.json" "$f"; done
+    ;;
+
+  report)  # aggregate per-arm: Hit-rate, median cost, avg tool-adoption
+    ID="${1:?usage: monobench report <id>}"
+    shopt -s nullglob
+    { for f in "$ROOT/results/$ID"/*.jsonl; do node "$ROOT/harness/grade.mjs" "$ROOT/instances/$ID/instance.json" "$f" 2>/dev/null | grep '^TSV'; done; } \
+    | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const rows=s.split("\n").filter(Boolean).map(l=>l.split("\t"));
+      console.log("── per run (every run, to see consistency) ──");
+      console.log("run                              | grade     | cost$ | time | calls | adopt");
+      for(const r of [...rows].sort((a,b)=>(a[2]||"").localeCompare(b[2]||""))){console.log((r[2]||"").replace(".jsonl","").padEnd(32)+" | "+(r[3]||"").padEnd(9)+" | "+(+r[4]||0).toFixed(2).padStart(5)+" | "+((r[8]||"0")+"s").padStart(4)+" | "+String(r[6]||"").padStart(5)+" | "+(r[7]||""))}
+      const A={};for(const r of rows){const arm=(r[2]||"").replace(/-r\d+.*/,"");(A[arm]??=[]).push({g:r[3],c:+r[4],t:+r[5],calls:+r[6],adopt:+r[7],time:+(r[8]||0)})}
+      const med=a=>{a=[...a].sort((x,y)=>x-y);return a.length?a[Math.floor(a.length/2)]:0};const cv=a=>{const m=a.reduce((x,y)=>x+y,0)/(a.length||1);if(!m)return 0;return Math.sqrt(a.reduce((s,x)=>s+(x-m)**2,0)/a.length)/m};
+      console.log("\n── aggregate ──");console.log("arm                  | n | FULL | med$ | medTok | medTime | calls min–med–max | adopt | wobble→sample");
+      for(const[arm,v]of Object.entries(A)){const full=v.filter(x=>x.g==="FULL").length;const cs=v.map(x=>x.calls);const w=Math.max(cv(cs),cv(v.map(x=>x.c)));const verdict=v.length<3?"n<3 → get to 3":w<0.2?"stable ✓ stop":w<0.45?"wobbly → n=5":"high → n=9";console.log(arm.padEnd(20)+" | "+v.length+" |  "+full+"/"+v.length+" | "+med(v.map(x=>x.c)).toFixed(2).padStart(4)+" | "+String(med(v.map(x=>x.t))).padStart(6)+" | "+(med(v.map(x=>x.time))+"s").padStart(7)+" | "+(Math.min(...cs)+"–"+med(cs)+"–"+Math.max(...cs)).padStart(17)+" | "+(v.reduce((s,x)=>s+x.adopt,0)/v.length).toFixed(1)+" | "+verdict)}
+      console.log("(wobble = max CV of calls/cost. Protocol: n=1 validity → n=3 signal → escalate 5/9 if wobbly. SPEC §6)")})'
+    ;;
+
+  add)   # scaffold a new instance from the template
+    ID="${1:?usage: monobench add <id>}"
+    [ -e "$ROOT/instances/$ID" ] && die "instance '$ID' already exists"
+    cp -r "$ROOT/instances/_TEMPLATE" "$ROOT/instances/$ID"
+    echo "created instances/$ID — now edit: instance.json, symptom.md (no spoilers), ground_truth.md"
+    ;;
+
+  *) die "unknown command '$CMD' (try: monobench help)";;
+esac

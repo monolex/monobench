@@ -1,0 +1,46 @@
+{
+  "id": "bun-27838-sslconfig-race",
+  "title": "fix: SSLConfig intern/deref race causing segfault in proxy tunnel setup",
+  "repo": "https://github.com/oven-sh/bun",
+  "tag": "7ce412010a66",
+  "base_commit": "7ce412010a66",
+  "languages": [
+    "zig"
+  ],
+  "category": "intern/deref race (SSLConfig, proxy tunnel)",
+  "crash_site": "TODO — where the crash is OBSERVED (must be a DIFFERENT fn than the cause)",
+  "buggy_files_to_verify": [
+    "packages/bun-usockets/src/crypto/openssl.c",
+    "src/bun.js/api/server/SSLConfig.zig",
+    "src/bun.js/webcore/fetch.zig",
+    "src/bun.js/webcore/fetch/FetchTasklet.zig",
+    "src/http.zig",
+    "src/http/AsyncHTTP.zig",
+    "src/http/HTTPContext.zig",
+    "src/http/HTTPThread.zig"
+  ],
+  "ground_truth": {
+    "root_cause_file": "packages/bun-usockets/src/crypto/openssl.c",
+    "root_cause_fn": "TODO",
+    "decoy_fn": "TODO — adjacent plausible-but-wrong fn (often the crash site itself)",
+    "fix_pr": 27838,
+    "fix_commit": "7b8aabb30b6a",
+    "fix_summary": "TODO — see ground_truth.md"
+  },
+  "grading": {
+    "full_must_name": [
+      "TODO"
+    ],
+    "mechanism_keywords": [
+      "TODO"
+    ],
+    "decoy_markers": [
+      "TODO"
+    ]
+  },
+  "admission": {
+    "note": "PROVISIONAL scaffold. Author TODO before running: hide the API in symptom.md, verify crash-fn≠cause-fn, fill grading keys, run the thin arm.",
+    "baseline_full_hit_rate_max": 0.5
+  },
+  "provenance": "https://github.com/oven-sh/bun/pull/27838 — fix: SSLConfig intern/deref race causing segfault in proxy tunnel setup (merged 2026-03-08); base 7ce412010a66 = merge first-parent."
+}

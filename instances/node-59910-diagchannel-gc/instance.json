@@ -1,0 +1,40 @@
+{
+  "id": "node-59910-diagchannel-gc",
+  "title": "diagnostics_channel: fix race condition with diagnostics_channel and GC",
+  "repo": "https://github.com/nodejs/node",
+  "tag": "c7b0dfbd7c56",
+  "base_commit": "c7b0dfbd7c56",
+  "languages": [
+    "c++",
+    "js"
+  ],
+  "category": "race with GC (diagnostics_channel)",
+  "crash_site": "TODO — where the crash is OBSERVED (must be a DIFFERENT fn than the cause)",
+  "buggy_files_to_verify": [
+    "lib/diagnostics_channel.js"
+  ],
+  "ground_truth": {
+    "root_cause_file": "lib/diagnostics_channel.js",
+    "root_cause_fn": "TODO",
+    "decoy_fn": "TODO — adjacent plausible-but-wrong fn (often the crash site itself)",
+    "fix_pr": 59910,
+    "fix_commit": "897932c4848a",
+    "fix_summary": "TODO — see ground_truth.md"
+  },
+  "grading": {
+    "full_must_name": [
+      "TODO"
+    ],
+    "mechanism_keywords": [
+      "TODO"
+    ],
+    "decoy_markers": [
+      "TODO"
+    ]
+  },
+  "admission": {
+    "note": "PROVISIONAL scaffold. Author TODO before running: hide the API in symptom.md, verify crash-fn≠cause-fn, fill grading keys, run the thin arm.",
+    "baseline_full_hit_rate_max": 0.5
+  },
+  "provenance": "https://github.com/nodejs/node/pull/59910 — diagnostics_channel: fix race condition with diagnostics_channel and GC (merged 2025-09-19); base c7b0dfbd7c56 = merge first-parent."
+}

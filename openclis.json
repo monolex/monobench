@@ -1,0 +1,14 @@
+{
+  "name": "monobench",
+  "version": "0.1.4",
+  "description": "Code-intelligence tool benchmark for measuring whether AI agents locate real cross-boundary bug root causes with tools like monogram versus baseline.",
+  "repo": "monolex/monobench",
+  "source": "openclis",
+  "owner": "@openclis",
+  "category": "ai-evaluation",
+  "homepage": "https://monolex.ai/monobench",
+  "docs_url": "https://docs.monolex.ai/monobench",
+  "vendor": "Umzikim Inc",
+  "license_url": "https://cdn.openclis.com/license/openclis.md",
+  "binary_name": "monobench"
+}

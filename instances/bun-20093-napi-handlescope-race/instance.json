@@ -1,0 +1,40 @@
+{
+  "id": "bun-20093-napi-handlescope-race",
+  "title": "fix `NapiHandleScopeImpl` race condition",
+  "repo": "https://github.com/oven-sh/bun",
+  "tag": "c62a7a77a3fe",
+  "base_commit": "c62a7a77a3fe",
+  "languages": [
+    "c++",
+    "js"
+  ],
+  "category": "N-API handle-scope race",
+  "crash_site": "TODO — where the crash is OBSERVED (must be a DIFFERENT fn than the cause)",
+  "buggy_files_to_verify": [
+    "src/bun.js/bindings/napi_handle_scope.cpp"
+  ],
+  "ground_truth": {
+    "root_cause_file": "src/bun.js/bindings/napi_handle_scope.cpp",
+    "root_cause_fn": "TODO",
+    "decoy_fn": "TODO — adjacent plausible-but-wrong fn (often the crash site itself)",
+    "fix_pr": 20093,
+    "fix_commit": "4534f6e635d2",
+    "fix_summary": "TODO — see ground_truth.md"
+  },
+  "grading": {
+    "full_must_name": [
+      "TODO"
+    ],
+    "mechanism_keywords": [
+      "TODO"
+    ],
+    "decoy_markers": [
+      "TODO"
+    ]
+  },
+  "admission": {
+    "note": "PROVISIONAL scaffold. Author TODO before running: hide the API in symptom.md, verify crash-fn≠cause-fn, fill grading keys, run the thin arm.",
+    "baseline_full_hit_rate_max": 0.5
+  },
+  "provenance": "https://github.com/oven-sh/bun/pull/20093 — fix `NapiHandleScopeImpl` race condition (merged 2025-05-31); base c62a7a77a3fe = merge first-parent."
+}

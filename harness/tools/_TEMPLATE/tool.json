@@ -1,0 +1,10 @@
+{
+  "_README": "Define your own tool: copy this dir to tools/<your-tool>/, fill in, then: monobench run <instance> <your-tool>",
+  "name": "your-tool",
+  "desc": "what the tool is and how it reaches the agent",
+  "index": "your-tool index .            (shell cmd run INSIDE the repo before the agent; \"\" = none. Use ${REPO}/${CODEGRAPH}-style ${ENV} placeholders if needed.)",
+  "skill": "skill.md                      (a file in THIS dir, injected as system prompt / prepended to the niia prompt so the agent knows how to use the tool; \"\" = none. Put a skill.md next to this.)",
+  "deliver": "cli | mcp | none           (cli = available via Bash + skill text; mcp = first-class tools auto-injected; none = baseline)",
+  "mcp": { "command": "node", "args": ["${TOOL_BIN}", "serve", "--path", "${REPO}"] },
+  "forfeit_grep": "regex over the index command's output; if it matches, the tool FORFEITS this instance (it could not index the repo)"
+}

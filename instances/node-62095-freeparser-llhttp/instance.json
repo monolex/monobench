@@ -1,0 +1,41 @@
+{
+  "id": "node-62095-freeparser-llhttp",
+  "title": "http: fix use-after-free when freeParser is called during llhttp_execute",
+  "repo": "https://github.com/nodejs/node",
+  "tag": "8edeff9aa715",
+  "base_commit": "8edeff9aa715",
+  "languages": [
+    "c++",
+    "js"
+  ],
+  "category": "re-entrancy UAF (freeParser during llhttp_execute)",
+  "crash_site": "TODO — where the crash is OBSERVED (must be a DIFFERENT fn than the cause)",
+  "buggy_files_to_verify": [
+    "lib/_http_common.js",
+    "src/node_http_parser.cc"
+  ],
+  "ground_truth": {
+    "root_cause_file": "lib/_http_common.js",
+    "root_cause_fn": "TODO",
+    "decoy_fn": "TODO — adjacent plausible-but-wrong fn (often the crash site itself)",
+    "fix_pr": 62095,
+    "fix_commit": "a06e789625ec",
+    "fix_summary": "TODO — see ground_truth.md"
+  },
+  "grading": {
+    "full_must_name": [
+      "TODO"
+    ],
+    "mechanism_keywords": [
+      "TODO"
+    ],
+    "decoy_markers": [
+      "TODO"
+    ]
+  },
+  "admission": {
+    "note": "PROVISIONAL scaffold. Author TODO before running: hide the API in symptom.md, verify crash-fn≠cause-fn, fill grading keys, run the thin arm.",
+    "baseline_full_hit_rate_max": 0.5
+  },
+  "provenance": "https://github.com/nodejs/node/pull/62095 — http: fix use-after-free when freeParser is called during llhttp_execute (merged 2026-03-06); base 8edeff9aa715 = merge first-parent."
+}

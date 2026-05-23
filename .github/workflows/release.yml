@@ -1,0 +1,80 @@
+name: Monobench Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'monobench-v*'
+
+permissions:
+  contents: read
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+
+jobs:
+  build-publish:
+    name: ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux-x86_64
+            target: x86_64-unknown-linux-gnu
+            bin: monobench
+          - os: ubuntu-24.04-arm
+            platform: linux-aarch64
+            target: aarch64-unknown-linux-gnu
+            bin: monobench
+          - os: windows-latest
+            platform: windows-x86_64
+            target: x86_64-pc-windows-msvc
+            bin: monobench.exe
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+          shared-key: monobench-${{ matrix.platform }}
+
+      - name: Test
+        if: matrix.platform == 'linux-x86_64'
+        run: cargo test --locked
+
+      - name: Build
+        env:
+          TARGET: ${{ matrix.target }}
+        run: cargo build --release --locked --target "$TARGET"
+
+      - name: Package binary
+        env:
+          TARGET: ${{ matrix.target }}
+          BIN: ${{ matrix.bin }}
+        run: |
+          mkdir -p dist
+          cp "target/$TARGET/release/$BIN" "dist/$BIN"
+          if [[ "$BIN" != *.exe ]]; then chmod +x "dist/$BIN"; fi
+          ./dist/$BIN --version
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: monobench-${{ matrix.platform }}
+          path: dist/
+          retention-days: 30

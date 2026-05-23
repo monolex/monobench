@@ -1,0 +1,30 @@
+{
+  "_README": "Copy this dir to instances/<your-id>/ and fill in. Then: ./harness/run.sh <your-id> baseline 1",
+  "id": "REPLACE-org-repo-version-shortname",
+  "title": "one-line description of the bug",
+  "repo": "https://github.com/ORG/REPO",
+  "tag": "vX.Y.Z (or a branch/commit the bug exists at)",
+  "base_commit": "shortsha",
+  "languages": ["lang-a", "lang-b"],
+  "category": "use-after-free | race | logic | resource-leak | …",
+  "crash_site": "path/where/the/symptom/appears.ext  (the grep-trivial part)",
+  "buggy_files_to_verify": ["path/to/confirm/pristine/buggy/state.ext"],
+  "ground_truth": {
+    "root_cause_file": "path/to/the/actual/defect.ext",
+    "root_cause_fn": "the_function_with_the_bug",
+    "decoy_fn": "adjacent_function_that_looks_plausible_but_is_wrong (optional)",
+    "fix_pr": 0,
+    "fix_commit": "shortsha",
+    "fix_summary": "one line: what the real fix changed"
+  },
+  "grading": {
+    "full_must_name": ["the_function_with_the_bug"],
+    "mechanism_keywords": ["words", "that", "prove", "they", "understood", "the", "mechanism"],
+    "decoy_markers": ["adjacent_function_that_looks_plausible_but_is_wrong"]
+  },
+  "admission": {
+    "note": "Run baseline first. Admit only if baseline does NOT reliably reach FULL.",
+    "baseline_full_hit_rate_max": 0.5
+  },
+  "provenance": "where the bug came from / why it matters / the upstream issue+fix links"
+}

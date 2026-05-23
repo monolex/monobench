@@ -1,0 +1,29 @@
+{
+  "id": "bun-30185-getheapsnapshot-race",
+  "title": "bun cross-thread GC corruption: getHeapSnapshot copies a parent-VM JSC::Strong into a worker-thread lambda (PR #30185)",
+  "repo": "https://github.com/oven-sh/bun",
+  "tag": "0561f87d42ce",
+  "base_commit": "0561f87d42ce",
+  "languages": ["c++"],
+  "category": "cross-thread data race / JSC handle thread-affinity violation (corrupts the parent VM's HandleSet under concurrent GC)",
+  "crash_site": "JSC GC marking of the PARENT VM's strong handles — HandleSet::visitStrongHandles walking a SentinelLinkedList, null-deref at 0x10 (JSC internals). The crash is in correct GC code whose invariant was violated elsewhere.",
+  "buggy_files_to_verify": ["src/bun.js/bindings/webcore/JSWorker.cpp"],
+  "ground_truth": {
+    "root_cause_file": "src/bun.js/bindings/webcore/JSWorker.cpp",
+    "root_cause_fn": "jsWorkerPrototypeFunction_getHeapSnapshotBody",
+    "decoy_fn": "the JSC crash site (HandleSet::visitStrongHandles / SentinelLinkedList push/remove) which is CORRECT; the recent worker-lifetime rewrites (#29957/#29937) which look related but did NOT introduce it; BunV8HeapSnapshotBuilder (the worker's own concurrent GC) as a red herring",
+    "fix_pr": 30185,
+    "fix_commit": "0150c57051f2",
+    "fix_summary": "getHeapSnapshot captured a JSC::Strong<JSPromise> (in the parent VM's HandleSet) BY VALUE into cross-thread lambdas; JSC::Strong has no move ctor, so the copy/destroy ran HandleSet allocate/deallocate + SentinelLinkedList push/remove on the WORKER thread without the parent VM's lock, corrupting the list that the parent VM's GC marking concurrently walks. Fix: heap-allocate the Strong once on the parent thread, pass only the raw pointer through the worker lambdas (the worker never touches the parent HandleSet), and resolve+free on the parent side."
+  },
+  "grading": {
+    "full_must_name": ["getHeapSnapshot", "getHeapSnapshotBody", "jsWorkerPrototypeFunction_getHeapSnapshotBody"],
+    "mechanism_keywords": ["Strong", "by value", "copy", "no move", "cross-thread", "worker thread", "parent VM", "HandleSet", "without the lock", "captured", "raw pointer", "thread affinity", "allocate"],
+    "decoy_markers": ["visitStrongHandles", "SentinelLinkedList", "HandleSet::visitStrongHandles", "BunV8HeapSnapshotBuilder", "drainFromShared", "MarkingConstraint", "29957", "29937", "lifetime rewrite"]
+  },
+  "admission": {
+    "note": "monogram+haiku & baseline+haiku DISCRIMINATION round. Expected VERY HARD + discriminating: the crash is a null-deref deep in JSC GC marking of the PARENT VM's HandleSet (looks like a JSC bug / memory corruption with no origin), but the cause is a C++ binding copying a VM-bound JSC::Strong by value into a worker-thread lambda — a thread-affinity violation, with NO text bridge from crash to cause (the symptom never mentions snapshots). Live decoys: the correct JSC crash-site code, and the recent worker-lifetime-rewrite PRs the author explicitly exonerates. Obscure 2026 CI flake → low contamination.",
+    "baseline_full_hit_rate_max": 0.5
+  },
+  "provenance": "oven-sh/bun PR #30185 'worker: fix cross-thread HandleSet race in getHeapSnapshot' (merged 2026-05-03; merge 0150c57051f2; pre-fix base 0561f87d42ce = the merge of #30196). Flaky CI segfault (panic at 0x10) on a parent-VM GC helper thread, decoded from a bun.report trace (build 50529). Root cause present since getHeapSnapshot was added; the worker-lifetime rewrites #29957/#29937 did NOT introduce it (explicit decoy). Fix touches JSWorker.cpp (cause) + Worker.cpp/.h (raw-pointer plumbing)."
+}

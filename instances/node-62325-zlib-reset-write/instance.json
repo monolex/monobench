@@ -1,0 +1,40 @@
+{
+  "id": "node-62325-zlib-reset-write",
+  "title": "zlib: fix use-after-free when reset() is called during write",
+  "repo": "https://github.com/nodejs/node",
+  "tag": "dbc74059503b",
+  "base_commit": "dbc74059503b",
+  "languages": [
+    "c++",
+    "js"
+  ],
+  "category": "conditional UAF (zlib reset during write)",
+  "crash_site": "TODO — where the crash is OBSERVED (must be a DIFFERENT fn than the cause)",
+  "buggy_files_to_verify": [
+    "src/node_zlib.cc"
+  ],
+  "ground_truth": {
+    "root_cause_file": "src/node_zlib.cc",
+    "root_cause_fn": "TODO",
+    "decoy_fn": "TODO — adjacent plausible-but-wrong fn (often the crash site itself)",
+    "fix_pr": 62325,
+    "fix_commit": "53bcd114b100",
+    "fix_summary": "TODO — see ground_truth.md"
+  },
+  "grading": {
+    "full_must_name": [
+      "TODO"
+    ],
+    "mechanism_keywords": [
+      "TODO"
+    ],
+    "decoy_markers": [
+      "TODO"
+    ]
+  },
+  "admission": {
+    "note": "PROVISIONAL scaffold. Author TODO before running: hide the API in symptom.md, verify crash-fn≠cause-fn, fill grading keys, run the thin arm.",
+    "baseline_full_hit_rate_max": 0.5
+  },
+  "provenance": "https://github.com/nodejs/node/pull/62325 — zlib: fix use-after-free when reset() is called during write (merged 2026-03-26); base dbc74059503b = merge first-parent."
+}

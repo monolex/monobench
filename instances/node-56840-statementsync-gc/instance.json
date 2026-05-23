@@ -1,0 +1,41 @@
+{
+  "id": "node-56840-statementsync-gc",
+  "title": "sqlite: fix use-after-free in StatementSync due to premature GC",
+  "repo": "https://github.com/nodejs/node",
+  "tag": "316014d17273",
+  "base_commit": "316014d17273",
+  "languages": [
+    "c++",
+    "js"
+  ],
+  "category": "premature-GC UAF (sqlite StatementSync)",
+  "crash_site": "TODO — where the crash is OBSERVED (must be a DIFFERENT fn than the cause)",
+  "buggy_files_to_verify": [
+    "src/node_sqlite.cc",
+    "src/node_sqlite.h"
+  ],
+  "ground_truth": {
+    "root_cause_file": "src/node_sqlite.cc",
+    "root_cause_fn": "TODO",
+    "decoy_fn": "TODO — adjacent plausible-but-wrong fn (often the crash site itself)",
+    "fix_pr": 56840,
+    "fix_commit": "cebf4c8a9f23",
+    "fix_summary": "TODO — see ground_truth.md"
+  },
+  "grading": {
+    "full_must_name": [
+      "TODO"
+    ],
+    "mechanism_keywords": [
+      "TODO"
+    ],
+    "decoy_markers": [
+      "TODO"
+    ]
+  },
+  "admission": {
+    "note": "PROVISIONAL scaffold. Author TODO before running: hide the API in symptom.md, verify crash-fn≠cause-fn, fill grading keys, run the thin arm.",
+    "baseline_full_hit_rate_max": 0.5
+  },
+  "provenance": "https://github.com/nodejs/node/pull/56840 — sqlite: fix use-after-free in StatementSync due to premature GC (merged 2025-02-05); base 316014d17273 = merge first-parent."
+}

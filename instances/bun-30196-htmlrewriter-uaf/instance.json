@@ -1,0 +1,29 @@
+{
+  "id": "bun-30196-htmlrewriter-uaf",
+  "title": "bun HTMLRewriter double-free: the end()-error path finalizes a Response the JS wrapper already owns (PR #30196)",
+  "repo": "https://github.com/oven-sh/bun",
+  "tag": "d0a0bc4c9a5d",
+  "base_commit": "d0a0bc4c9a5d",
+  "languages": ["zig", "c++"],
+  "category": "use-after-free / double-free (object ownership across the Zig core ↔ JSC wrapper boundary)",
+  "crash_site": "src/bun.js/webcore/Response.zig::finalize and the GC-time JSResponse destructor (codegen/ZigGeneratedClasses) — where the double-free is OBSERVED on a LATER GC sweep, NOT where it originates",
+  "buggy_files_to_verify": ["src/bun.js/api/html_rewriter.zig"],
+  "ground_truth": {
+    "root_cause_file": "src/bun.js/api/html_rewriter.zig",
+    "root_cause_fn": "BufferOutputSink.runOutputSink",
+    "decoy_fn": "Response.finalize / the JSResponse GC destructor (the crash site); also the sibling write() error path in the SAME sink, which handles ownership CORRECTLY",
+    "fix_pr": 30196,
+    "fix_commit": "0561f87d42ce",
+    "fix_summary": "The buffered output sink's end() error branch called response.finalize() (and set sink.response = undefined) on a Response already owned by its JS wrapper cell created via sink.response.toJS() in init(); a later GC sweep then double-freed it through the JSResponse destructor. Fix: drop the manual finalize in the end() catch and let the JS wrapper own the lifetime — matching the already-correct write() error path."
+  },
+  "grading": {
+    "full_must_name": ["runOutputSink", "BufferOutputSink"],
+    "mechanism_keywords": ["double", "use-after-free", "already owned", "JS wrapper", "toJS", "finalize", "end", "manual", "ownership", "two owners", "freed twice", "GC", "sink.response", "init"],
+    "decoy_markers": ["Response.finalize", "Response::finalize", "JSResponse", "~JSResponse", "ResponseClass__finalize", "JSRef.deinit", "JSRef.finalize"]
+  },
+  "admission": {
+    "note": "monogram+haiku & baseline+haiku DISCRIMINATION round. Expected HARD + discriminating (unlike ksmbd-37899, which baseline-haiku solved 1/1 = non-discriminating / training-contaminated). The ASAN trace points at Response.finalize and the GC JSResponse destructor (the symptom); the cause is the synchronous end() error path of the buffered output sink double-finalizing a JS-owned Response — a cross-boundary OWNERSHIP bug with no text bridge from crash site to cause. Two live decoys at base: (1) the crash-site finalize/destructor, (2) the symmetric write() error path which is CORRECT. Obscure 2026 fuzzing find → low training-data contamination.",
+    "baseline_full_hit_rate_max": 0.5
+  },
+  "provenance": "oven-sh/bun PR #30196 'Fix HTMLRewriter use-after-free when handler rejects during end()' (merged 2026-05-03; squash-merge 0561f87d42ce; pre-fix base d0a0bc4c9a5d). Flaky SIGSEGV found by fuzzing; ASAN use-after-poison reached via the GC sweep of the Response JS wrapper (JSRef.deinit → Response.finalize → JSResponse::~JSResponse). Repro: an HTMLRewriter document/element handler returns a rejected promise on the final lastInTextNode chunk during transform() of an ArrayBuffer/string, then Bun.gc(true). Single-concern fix (html_rewriter.zig +1/-3) → clean grading."
+}

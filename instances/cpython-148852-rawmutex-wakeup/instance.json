@@ -1,0 +1,41 @@
+{
+  "id": "cpython-148852-rawmutex-wakeup",
+  "title": "gh-148820: Fix _PyRawMutex use-after-free on spurious semaphore wakeup",
+  "repo": "https://github.com/python/cpython",
+  "tag": "59b41c8c3ba3",
+  "base_commit": "59b41c8c3ba3",
+  "languages": [
+    "c"
+  ],
+  "category": "mutex UAF on spurious semaphore wakeup (_PyRawMutex)",
+  "crash_site": "TODO — where the crash is OBSERVED (must be a DIFFERENT fn than the cause)",
+  "buggy_files_to_verify": [
+    "Misc/NEWS.d/next/Core_and_Builtins/2026-04-21-14-36-44.gh-issue-148820.XhOGhA.rst",
+    "Python/lock.c",
+    "Python/parking_lot.c"
+  ],
+  "ground_truth": {
+    "root_cause_file": "Misc/NEWS.d/next/Core_and_Builtins/2026-04-21-14-36-44.gh-issue-148820.XhOGhA.rst",
+    "root_cause_fn": "TODO",
+    "decoy_fn": "TODO — adjacent plausible-but-wrong fn (often the crash site itself)",
+    "fix_pr": 148852,
+    "fix_commit": "ad3c5b7958b8",
+    "fix_summary": "TODO — see ground_truth.md"
+  },
+  "grading": {
+    "full_must_name": [
+      "TODO"
+    ],
+    "mechanism_keywords": [
+      "TODO"
+    ],
+    "decoy_markers": [
+      "TODO"
+    ]
+  },
+  "admission": {
+    "note": "PROVISIONAL scaffold. Author TODO before running: hide the API in symptom.md, verify crash-fn≠cause-fn, fill grading keys, run the thin arm.",
+    "baseline_full_hit_rate_max": 0.5
+  },
+  "provenance": "https://github.com/python/cpython/pull/148852 — gh-148820: Fix _PyRawMutex use-after-free on spurious semaphore wakeup (merged 2026-04-22); base 59b41c8c3ba3 = merge first-parent."
+}

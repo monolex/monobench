@@ -1,0 +1,40 @@
+{
+  "id": "deno-31770-statementsync-iter",
+  "title": "fix(ext/node): fix use-after-free in StatementSync JS iterator",
+  "repo": "https://github.com/denoland/deno",
+  "tag": "7558cafe636c",
+  "base_commit": "7558cafe636c",
+  "languages": [
+    "rust",
+    "js"
+  ],
+  "category": "UAF (StatementSync JS iterator)",
+  "crash_site": "TODO — where the crash is OBSERVED (must be a DIFFERENT fn than the cause)",
+  "buggy_files_to_verify": [
+    "ext/node/ops/sqlite/statement.rs"
+  ],
+  "ground_truth": {
+    "root_cause_file": "ext/node/ops/sqlite/statement.rs",
+    "root_cause_fn": "TODO",
+    "decoy_fn": "TODO — adjacent plausible-but-wrong fn (often the crash site itself)",
+    "fix_pr": 31770,
+    "fix_commit": "8d47d7e24402",
+    "fix_summary": "TODO — see ground_truth.md"
+  },
+  "grading": {
+    "full_must_name": [
+      "TODO"
+    ],
+    "mechanism_keywords": [
+      "TODO"
+    ],
+    "decoy_markers": [
+      "TODO"
+    ]
+  },
+  "admission": {
+    "note": "PROVISIONAL scaffold. Author TODO before running: hide the API in symptom.md, verify crash-fn≠cause-fn, fill grading keys, run the thin arm.",
+    "baseline_full_hit_rate_max": 0.5
+  },
+  "provenance": "https://github.com/denoland/deno/pull/31770 — fix(ext/node): fix use-after-free in StatementSync JS iterator (merged 2026-01-08); base 7558cafe636c = merge first-parent."
+}

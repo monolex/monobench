@@ -1,0 +1,39 @@
+{
+  "id": "bun-28907-threadpool-wakeup",
+  "title": "threading: fix lost-wakeup race in ThreadPool.notify() on aarch64",
+  "repo": "https://github.com/oven-sh/bun",
+  "tag": "1b009ee4bd1a",
+  "base_commit": "1b009ee4bd1a",
+  "languages": [
+    "zig"
+  ],
+  "category": "lost-wakeup race (ThreadPool.notify)",
+  "crash_site": "TODO — where the crash is OBSERVED (must be a DIFFERENT fn than the cause)",
+  "buggy_files_to_verify": [
+    "src/threading/ThreadPool.zig"
+  ],
+  "ground_truth": {
+    "root_cause_file": "src/threading/ThreadPool.zig",
+    "root_cause_fn": "TODO",
+    "decoy_fn": "TODO — adjacent plausible-but-wrong fn (often the crash site itself)",
+    "fix_pr": 28907,
+    "fix_commit": "770893d28ff9",
+    "fix_summary": "TODO — see ground_truth.md"
+  },
+  "grading": {
+    "full_must_name": [
+      "TODO"
+    ],
+    "mechanism_keywords": [
+      "TODO"
+    ],
+    "decoy_markers": [
+      "TODO"
+    ]
+  },
+  "admission": {
+    "note": "PROVISIONAL scaffold. Author TODO before running: hide the API in symptom.md, verify crash-fn≠cause-fn, fill grading keys, run the thin arm.",
+    "baseline_full_hit_rate_max": 0.5
+  },
+  "provenance": "https://github.com/oven-sh/bun/pull/28907 — threading: fix lost-wakeup race in ThreadPool.notify() on aarch64 (merged 2026-04-08); base 1b009ee4bd1a = merge first-parent."
+}

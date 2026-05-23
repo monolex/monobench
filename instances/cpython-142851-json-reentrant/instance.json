@@ -1,0 +1,41 @@
+{
+  "id": "cpython-142851-json-reentrant",
+  "title": "gh-142831: Fix UAF in `_json` module",
+  "repo": "https://github.com/python/cpython",
+  "tag": "d761f539bdae",
+  "base_commit": "d761f539bdae",
+  "languages": [
+    "c",
+    "python"
+  ],
+  "category": "re-entrant-mutation UAF (json encoder)",
+  "crash_site": "TODO — where the crash is OBSERVED (must be a DIFFERENT fn than the cause)",
+  "buggy_files_to_verify": [
+    "Misc/NEWS.d/next/Library/2025-12-17-04-10-35.gh-issue-142831.ee3t4L.rst",
+    "Modules/_json.c"
+  ],
+  "ground_truth": {
+    "root_cause_file": "Misc/NEWS.d/next/Library/2025-12-17-04-10-35.gh-issue-142831.ee3t4L.rst",
+    "root_cause_fn": "TODO",
+    "decoy_fn": "TODO — adjacent plausible-but-wrong fn (often the crash site itself)",
+    "fix_pr": 142851,
+    "fix_commit": "235fa7244a04",
+    "fix_summary": "TODO — see ground_truth.md"
+  },
+  "grading": {
+    "full_must_name": [
+      "TODO"
+    ],
+    "mechanism_keywords": [
+      "TODO"
+    ],
+    "decoy_markers": [
+      "TODO"
+    ]
+  },
+  "admission": {
+    "note": "PROVISIONAL scaffold. Author TODO before running: hide the API in symptom.md, verify crash-fn≠cause-fn, fill grading keys, run the thin arm.",
+    "baseline_full_hit_rate_max": 0.5
+  },
+  "provenance": "https://github.com/python/cpython/pull/142851 — gh-142831: Fix UAF in `_json` module (merged 2026-04-12); base d761f539bdae = merge first-parent."
+}

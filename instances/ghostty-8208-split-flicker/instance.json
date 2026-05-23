@@ -1,0 +1,29 @@
+{
+  "id": "ghostty-8208-split-flicker",
+  "title": "Ghostty GTK split-tree flicker — 6 months unsolved, cracked by Codex 5.3 (Opus 4.6 failed)",
+  "repo": "https://github.com/ghostty-org/ghostty",
+  "tag": "b7913f09a",
+  "base_commit": "b7913f09a",
+  "languages": ["zig", "gtk"],
+  "category": "UI async-ordering / render-timing (not memory-safety)",
+  "crash_site": "(no crash — a visual flicker; there is no error string to grep)",
+  "buggy_files_to_verify": ["src/apprt/gtk/class/split_tree.zig"],
+  "ground_truth": {
+    "root_cause_file": "src/apprt/gtk/class/split_tree.zig",
+    "root_cause_fn": "onRebuild / propTree (the clear-then-rebuild flow)",
+    "decoy_fn": "(none forced; the renderer / surface widgets are plausible misdirections)",
+    "fix_pr": 8208,
+    "fix_commit": "264dbf9e",
+    "fix_summary": "stop clearing tree_bin before the async rebuild; debounce + keep old tree visible, swap the bin child atomically to the new root, and reuse existing leaf SurfaceScrolledWindow widgets (reparent) instead of recreating them"
+  },
+  "grading": {
+    "full_must_name": ["split_tree"],
+    "mechanism_keywords": ["clear", "rebuild", "blank frame", "reparent", "atomic", "reuse", "unparent", "tree_bin", "debounce"],
+    "decoy_markers": []
+  },
+  "admission": {
+    "note": "Guaranteed discriminating: open ~6 months; the human author + Opus 4.6 + lower Codex levels all failed. Only Codex 5.3 (xhigh) solved it. Run baseline for the record anyway.",
+    "baseline_full_hit_rate_max": 0.5
+  },
+  "provenance": "GitHub issue #8208 'gtk-ng: fix split change (new, delete, resize, etc.) flicker', closed 2026-03-04. Solved by Codex 5.3 (xhigh) with a vague prompt in 45 min / $4.14 after Mitchell Hashimoto + others struggled 6+ months; Opus 4.6 and other Codex reasoning levels failed (https://x.com/mitchellh/status/2029348087538565612). Fix commit 264dbf9e; agent trace at ampcode.com/threads/T-019cbadf-cb5a-742e-b0e3-2d7164de743f."
+}

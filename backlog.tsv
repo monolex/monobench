@@ -1,0 +1,16 @@
+# monobench instance backlog — one row = one candidate. Generate with: harness/gen-instances.sh
+# Pipe-delimited:  id | owner/repo | pr | langs(csv) | category
+# (already built by hand, NOT in this manifest: ksmbd-37899, bun-30196-htmlrewriter-uaf, bun-30185-getheapsnapshot-race)
+node-56840-statementsync-gc|nodejs/node|56840|c++,js|premature-GC UAF (sqlite StatementSync)
+node-62095-freeparser-llhttp|nodejs/node|62095|c++,js|re-entrancy UAF (freeParser during llhttp_execute)
+node-62325-zlib-reset-write|nodejs/node|62325|c++,js|conditional UAF (zlib reset during write)
+node-59910-diagchannel-gc|nodejs/node|59910|c++,js|race with GC (diagnostics_channel)
+cpython-142851-json-reentrant|python/cpython|142851|c,python|re-entrant-mutation UAF (json encoder)
+cpython-147962-grouper-reentrant|python/cpython|147962|c,python|re-entrant UAF (itertools._grouper)
+cpython-148852-rawmutex-wakeup|python/cpython|148852|c|mutex UAF on spurious semaphore wakeup (_PyRawMutex)
+deno-31770-statementsync-iter|denoland/deno|31770|rust,js|UAF (StatementSync JS iterator)
+bun-29829-onhandshake-uaf|oven-sh/bun|29829|zig|callback-frees-client UAF (onHandshake; verify crash≠cause)
+bun-27838-sslconfig-race|oven-sh/bun|27838|zig|intern/deref race (SSLConfig, proxy tunnel)
+bun-20093-napi-handlescope-race|oven-sh/bun|20093|c++,js|N-API handle-scope race
+bun-29951-directorywatch-uaf|oven-sh/bun|29951|zig|lifetime UAF (DirectoryWatchStore)
+bun-28907-threadpool-wakeup|oven-sh/bun|28907|zig|lost-wakeup race (ThreadPool.notify)
