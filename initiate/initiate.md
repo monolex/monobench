@@ -29,14 +29,14 @@ COMMANDS
 
 ARMS = TOOL ADAPTERS (pluggable — define your own)
   Each tool is a drop-in adapter: harness/tools/<name>/tool.json
-    { index: "<cmd run in repo, or ''>", skill: "<skill.md to inject, or ''>",
+    { index_steps: [{command,args}], skill: "<skill.md to inject, or ''>",
       deliver: "none|cli|mcp", mcp: {command,args with ${REPO}/${CODEGRAPH}}, forfeit_grep: "<regex>" }
   Shipped adapters:
-    baseline      index:'' deliver:none        — control (builtins only). The admission gate.
-    monogram      index:'monogram index .' cli — CLI; skill leads with structural cmds, "run first".
-    monogram-mcp  index:'monogram index .' mcp — SAME index as forced MCP tools (monogram serve).
+    baseline      index_steps:[] deliver:none  — control (builtins only). The admission gate.
+    monogram      monogram index .        cli  — CLI; skill leads with structural cmds, "run first".
+    monogram-mcp  monogram index .        mcp  — SAME index as forced MCP tools (monogram serve).
                                                  Lifts adoption on weak models (CLI suggestion → tools).
-    codegraph     index:'codegraph init' mcp   — first-class MCP tools; FORFEITs if it can't index (Zig OOM).
+    codegraph     codegraph init+index    mcp  — first-class MCP tools; FORFEITs if it can't index (Zig OOM).
   Add a tool:  cp -r harness/tools/_TEMPLATE harness/tools/<name> && edit tool.json (+ skill.md)
   EVERY arm gets the same depth directive (prompts/depth.md); only the tool differs.
 

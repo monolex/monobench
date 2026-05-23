@@ -1,7 +1,6 @@
 // monobench — code-intelligence-tool benchmark (mono-series CLI, Rust core).
-// Management + analysis (list/tools/status/clean/show/grade/trace/report/adoption/add) are native Rust.
-// run/matrix delegate per-run orchestration to harness/run.sh (clone, worktree, claude -p / codex / niia).
-mod util; mod grade; mod report; mod adoption; mod trace; mod meter; mod run; mod export;
+// Management, analysis, run, and matrix orchestration are native Rust.
+mod util; mod grade; mod report; mod adoption; mod trace; mod meter; mod run; mod export; mod niia_runner;
 use grade::{load_inst, grade_jsonl, grade_text_file, print_grade, RunStats};
 use std::path::{Path, PathBuf};
 use std::process::Command;

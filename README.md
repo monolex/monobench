@@ -29,8 +29,6 @@ monobench/
 │   ├── prompts/depth.md      # shared "dig deep" directive — EVERY arm gets it (fairness)
 │   ├── tools/<name>/         # PLUGGABLE tool adapters: tool.json + injected docs (skill.md/initiate.md/lead.md)
 │   │   ├── baseline/  monogram/  monogram-mcp/  codegraph/  _TEMPLATE/
-│   ├── run.sh                # legacy shell runner (the Rust `run` reimplements this natively; being retired)
-│   └── runners/niia.sh       # interactive model-CLI runner (PTY; off metered `-p`; metered by monometer)
 ├── results/<id>/             # run logs + grades (gitignored)
 ├── SPEC.md   CANDIDATES.md
 ```
@@ -56,7 +54,7 @@ headless terminal (`MONOBENCH_RUNNER=niia`, off metered `-p`). The CLI binary it
 
 ## Two pluggable dimensions
 **Tools** — each is a drop-in adapter `harness/tools/<name>/tool.json`
-(`index` cmd · `skill` to inject · `deliver`: none|cli|mcp · `forfeit_grep`). Add one:
+(`index_steps` argv commands · `skill` to inject · `deliver`: none|cli|mcp · `forfeit_grep`). Add one:
 `cp -r harness/tools/_TEMPLATE harness/tools/<name>`. Shipped: **baseline** (control/admission gate),
 **monogram** (CLI + skill), **codegraph** (MCP; FORFEITs on repos it can't index, e.g. Zig).
 

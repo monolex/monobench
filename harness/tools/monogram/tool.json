@@ -1,7 +1,10 @@
 {
   "name": "monogram",
   "desc": "monogram (cli). DEFAULT delivery (promoted from monogram-discover 2026-05-22): inject initiate.md + a MINIMAL skill that defers to monogram's OWN live self-doc + [NEXT] hints, NOT a full static skill blob. On haiku this beat the heavy full-skill arm (now monogram-heavy) 4/4 vs 1/6 — over-injecting the skill overwhelms weak models. See monogram-heavy for the control.",
-  "index": "monogram index .",
+  "index": "",
+  "index_steps": [
+    { "command": "monogram", "args": ["index", "."] }
+  ],
   "skill": "skill-discover.md",
   "deliver": "cli",
   "forfeit_grep": ""

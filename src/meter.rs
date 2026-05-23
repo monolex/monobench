@@ -1,5 +1,5 @@
 // monobench — per-run token + CACHE breakdown for a niia-driven model CLI run (reads a claude session
-// JSONL, sums usage incl. cache). Emits the same JSON shape niia.sh consumes. Cost is added separately.
+// JSONL, sums usage incl. cache). Emits the JSON shape grade_text_file consumes.
 use serde_json::Value;
 
 /// Parse an ISO-8601 timestamp (YYYY-MM-DDThh:mm:ss…) to epoch seconds (civil-days algorithm; no dep).
@@ -16,7 +16,7 @@ fn iso_to_secs(s: &str) -> Option<i64> {
     Some(days * 86400 + h * 3600 + mi * 60 + se)
 }
 
-pub fn meter(path: &str) {
+pub fn meter_json(path: &str) -> Value {
     let sid = path.rsplit('/').next().unwrap_or(path).trim_end_matches(".jsonl");
     let (mut input, mut output, mut cr, mut cc, mut msgs) = (0i64, 0i64, 0i64, 0i64, 0i64);
     let mut model = String::new();
@@ -40,10 +40,13 @@ pub fn meter(path: &str) {
     let denom = cr + input + cc;
     let cache_hit = if denom > 0 { (1000.0 * cr as f64 / denom as f64).round() / 10.0 } else { 0.0 };
     let dur: Option<i64> = if tmax > tmin { Some(tmax - tmin) } else { None };
-    let out = serde_json::json!({
+    serde_json::json!({
         "session_id": sid, "model": model, "msgs": msgs,
         "tokens": total, "input": input, "output": output, "cache_read": cr, "cache_creation": cc,
         "cache_hit_pct": cache_hit, "duration_s": dur
-    });
-    println!("{}", out);
+    })
+}
+
+pub fn meter(path: &str) {
+    println!("{}", meter_json(path));
 }

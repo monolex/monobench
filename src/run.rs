@@ -1,6 +1,6 @@
-// monobench — native runner (ports harness/run.sh). Runs ONE instance under ONE tool adapter:
+// monobench — native runner. Runs ONE instance under ONE tool adapter:
 // clone/worktree → index (FORFEIT if it can't) → assemble the docs-in-prompt → invoke the model
-// (claude-p / codex native; niia delegates to runners/niia.sh) → grade. Parallel-safe via a worktree lock.
+// (claude-p / codex / niia native) → grade. Parallel-safe via a worktree lock.
 use crate::grade::{grade_jsonl, grade_text_file, load_inst, print_grade};
 use crate::util::read_json;
 use serde_json::Value;
@@ -38,7 +38,7 @@ pub fn run(root: &Path, id: &str, arm: &str, model: &str, run_no: usize, quiet: 
     let tag = inst_json.get("tag").and_then(Value::as_str).unwrap_or("").to_string();
     let tj = read_json(&tooldir.join("tool.json"));
     let field = |k: &str| tj.get(k).and_then(Value::as_str).unwrap_or("").to_string();
-    let (index, skill, deliver, fgrep) = (field("index"), field("skill"), field("deliver"), field("forfeit_grep"));
+    let (skill, deliver, fgrep) = (field("skill"), field("deliver"), field("forfeit_grep"));
 
     let env = |k: &str, d: &str| std::env::var(k).unwrap_or_else(|_| d.into());
     let work = env("MONOBENCH_WORK", "/tmp/monobench-work");
@@ -95,17 +95,20 @@ pub fn run(root: &Path, id: &str, arm: &str, model: &str, run_no: usize, quiet: 
         if deliver.is_empty() { "none" } else { &deliver }, if isolate { "worktree" } else { "shared" }); }
 
     // 2. index for the tool (+ FORFEIT if it can't)
-    if !index.is_empty() {
-        let log = Command::new("sh").arg("-c").arg(&index).current_dir(&clone).output()
-            .map(|o| format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))).unwrap_or_default();
-        if !fgrep.is_empty() {
-            let ll = log.to_lowercase();
-            if fgrep.split('|').any(|p| !p.is_empty() && ll.contains(&p.to_lowercase())) {
-                let msg = format!("  FORFEIT — '{arm}' could not index this repo");
-                println!("{msg}");
-                std::fs::write(out.join(format!("{runid}.forfeit")), msg).ok();
-                return 0;
-            }
+    let log = match run_index(&tj, &clone, &clone, &codegraph) {
+        Ok(log) => log,
+        Err(e) => {
+            eprintln!("index failed for '{arm}': {e}");
+            return 1;
+        }
+    };
+    if !fgrep.is_empty() {
+        let ll = log.to_lowercase();
+        if fgrep.split('|').any(|p| !p.is_empty() && ll.contains(&p.to_lowercase())) {
+            let msg = format!("  FORFEIT — '{arm}' could not index this repo");
+            println!("{msg}");
+            std::fs::write(out.join(format!("{runid}.forfeit")), msg).ok();
+            return 0;
         }
     }
 
@@ -120,9 +123,13 @@ pub fn run(root: &Path, id: &str, arm: &str, model: &str, run_no: usize, quiet: 
     let mcpcfg = if deliver == "mcp" {
         let p = out.join(format!("mcp-{runid}.json"));
         let mcp = tj.get("mcp").cloned().unwrap_or(Value::Null);
-        let sub = |s: &str| s.replace("${REPO}", &clone.to_string_lossy()).replace("${CODEGRAPH}", &codegraph);
-        let command = sub(mcp.get("command").and_then(Value::as_str).unwrap_or(""));
-        let args: Vec<String> = mcp.get("args").and_then(Value::as_array).map(|a| a.iter().filter_map(|x| x.as_str()).map(sub).collect()).unwrap_or_default();
+        let raw_command = mcp.get("command").and_then(Value::as_str).unwrap_or("");
+        let raw_args: Vec<String> = mcp.get("args").and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default();
+        let (command, args) = match command_and_args(raw_command, &raw_args, &clone, &codegraph) {
+            Ok(x) => x,
+            Err(e) => { eprintln!("invalid mcp config for '{arm}': {e}"); return 1; }
+        };
         let cfg = serde_json::json!({ "mcpServers": { arm: { "command": command, "args": args } } });
         std::fs::write(&p, cfg.to_string()).ok();
         p
@@ -137,10 +144,10 @@ pub fn run(root: &Path, id: &str, arm: &str, model: &str, run_no: usize, quiet: 
 
     match runner.as_str() {
         "niia" => {
-            let pf = std::env::temp_dir().join(format!("mb-pf-{runid}"));
-            std::fs::write(&pf, format!("{sys}\n\n{q}\n")).ok();
-            Command::new(root.join("harness/runners/niia.sh"))
-                .arg(&clone).arg(&pf).arg("ROOTCAUSE").arg(out.join(&runid)).status().ok();
+            if let Err(e) = crate::niia_runner::run(&clone, &format!("{sys}\n\n{q}\n"), "ROOTCAUSE", &out.join(&runid), &effort) {
+                eprintln!("niia runner failed: {e}");
+                return 1;
+            }
             if !quiet { print_grade(&grade_text_file(&inst, &out.join(format!("{runid}.answer.txt")).to_string_lossy(), &out.join(format!("{runid}.meter.json")).to_string_lossy())); }
         }
         "codex" => {
@@ -199,6 +206,101 @@ pub fn run(root: &Path, id: &str, arm: &str, model: &str, run_no: usize, quiet: 
     0
 }
 
+fn sub_vars(s: &str, repo: &Path, codegraph: &str) -> String {
+    s.replace("${REPO}", &repo.to_string_lossy()).replace("${CODEGRAPH}", codegraph)
+}
+
+fn split_words(s: &str) -> Result<Vec<String>, String> {
+    let mut words = Vec::new();
+    let mut cur = String::new();
+    let mut quote: Option<char> = None;
+    let mut esc = false;
+    for ch in s.chars() {
+        if esc {
+            cur.push(ch);
+            esc = false;
+            continue;
+        }
+        if ch == '\\' {
+            esc = true;
+            continue;
+        }
+        if let Some(q) = quote {
+            if ch == q { quote = None; } else { cur.push(ch); }
+            continue;
+        }
+        match ch {
+            '\'' | '"' => quote = Some(ch),
+            c if c.is_whitespace() => {
+                if !cur.is_empty() {
+                    words.push(std::mem::take(&mut cur));
+                }
+            }
+            _ => cur.push(ch),
+        }
+    }
+    if esc { cur.push('\\'); }
+    if quote.is_some() { return Err("unterminated quote".into()); }
+    if !cur.is_empty() { words.push(cur); }
+    Ok(words)
+}
+
+fn command_and_args(command: &str, args: &[String], repo: &Path, codegraph: &str) -> Result<(String, Vec<String>), String> {
+    let expanded = sub_vars(command, repo, codegraph);
+    let mut words = split_words(&expanded)?;
+    if words.is_empty() { return Err("missing command".into()); }
+    let exe = words.remove(0);
+    for arg in args {
+        words.push(sub_vars(arg, repo, codegraph));
+    }
+    Ok((exe, words))
+}
+
+fn run_argv(command: &str, args: &[String], cwd: &Path) -> Result<String, String> {
+    let out = Command::new(command).args(args).current_dir(cwd).output()
+        .map_err(|e| format!("{command}: {e}"))?;
+    let mut log = String::new();
+    log.push_str(&String::from_utf8_lossy(&out.stdout));
+    log.push_str(&String::from_utf8_lossy(&out.stderr));
+    if !out.status.success() {
+        log.push_str(&format!("\n[exit {}]\n", out.status.code().unwrap_or(-1)));
+    }
+    Ok(log)
+}
+
+fn run_index_step(step: &Value, cwd: &Path, repo: &Path, codegraph: &str) -> Result<String, String> {
+    let command = step.get("command").and_then(Value::as_str).unwrap_or("");
+    let args: Vec<String> = step.get("args").and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default();
+    let quiet = step.get("quiet").and_then(Value::as_bool).unwrap_or(false);
+    let (exe, argv) = command_and_args(command, &args, repo, codegraph)?;
+    let log = run_argv(&exe, &argv, cwd)?;
+    if quiet { Ok(String::new()) } else { Ok(log) }
+}
+
+fn run_legacy_index(index: &str, cwd: &Path, repo: &Path, codegraph: &str) -> Result<String, String> {
+    if index.chars().any(|c| matches!(c, ';' | '|' | '&' | '<' | '>' | '`')) {
+        return Err("legacy index contains shell operators; convert it to index_steps".into());
+    }
+    let expanded = sub_vars(index, repo, codegraph);
+    let mut words = split_words(&expanded)?;
+    if words.is_empty() { return Ok(String::new()); }
+    let exe = words.remove(0);
+    run_argv(&exe, &words, cwd)
+}
+
+fn run_index(tool_json: &Value, cwd: &Path, repo: &Path, codegraph: &str) -> Result<String, String> {
+    if let Some(steps) = tool_json.get("index_steps").and_then(Value::as_array) {
+        let mut log = String::new();
+        for step in steps {
+            log.push_str(&run_index_step(step, cwd, repo, codegraph)?);
+        }
+        return Ok(log);
+    }
+    let index = tool_json.get("index").and_then(Value::as_str).unwrap_or("").trim();
+    if index.is_empty() { Ok(String::new()) } else { run_legacy_index(index, cwd, repo, codegraph) }
+}
+
 /// Parse `monometer sessions --provider codex` → the meter.json shape (tokens/cost/duration/model).
 fn codex_meter(dur: u64) -> String {
     let out = Command::new("monometer").args(["sessions", "--provider", "codex", "--recent", "3", "--json"]).output()
@@ -212,4 +314,30 @@ fn codex_meter(dur: u64) -> String {
         "duration_s": dur,
         "model": model
     }).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn substitutes_repo_and_codegraph() {
+        let repo = Path::new("/tmp/repo");
+        assert_eq!(sub_vars("${CODEGRAPH} --path ${REPO}", repo, "node cg.js"), "node cg.js --path /tmp/repo");
+    }
+
+    #[test]
+    fn expands_command_with_prefix_args() {
+        let repo = Path::new("/tmp/repo");
+        let args = vec!["serve".to_string(), "--path".to_string(), "${REPO}".to_string()];
+        let (cmd, argv) = command_and_args("${CODEGRAPH}", &args, repo, "node /opt/codegraph.js").unwrap();
+        assert_eq!(cmd, "node");
+        assert_eq!(argv, vec!["/opt/codegraph.js", "serve", "--path", "/tmp/repo"]);
+    }
+
+    #[test]
+    fn rejects_legacy_shell_operators() {
+        let err = run_legacy_index("a; b", Path::new("."), Path::new("."), "codegraph").unwrap_err();
+        assert!(err.contains("index_steps"));
+    }
 }

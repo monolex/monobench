@@ -30,18 +30,18 @@ from being a grep-solvable toy.
 
 ## 4. Arms = pluggable tool adapters (fairness)
 Each tool is a drop-in adapter `harness/tools/<name>/tool.json`:
-`{ index, skill, deliver: none|cli|mcp, mcp:{command,args}, forfeit_grep }`.
+`{ index_steps, skill, deliver: none|cli|mcp, mcp:{command,args}, forfeit_grep }`.
 - **baseline** — `deliver:none`, no skill. Builtins only. The control + admission gate.
-- **+tool** (monogram, codegraph, or your own) — its `index` runs in the repo; its `skill.md` (if any)
+- **+tool** (monogram, codegraph, or your own) — its `index_steps` run in the repo; its `skill.md` (if any)
   is injected; `deliver:mcp` exposes it as first-class MCP tools.
 - The shared depth directive (`prompts/depth.md`) is injected for **every** arm — the ONLY variable
-  is the tool. A tool whose `index` output matches `forfeit_grep` is recorded **FORFEIT** (e.g.
+  is the tool. A tool whose index output matches `forfeit_grep` is recorded **FORFEIT** (e.g.
   codegraph OOMs on Zig). Add a tool: `cp -r harness/tools/_TEMPLATE harness/tools/<name>`.
 
 The model invocation is a pluggable **runner** (`MONOBENCH_RUNNER`):
 - `claude-p` (default) — headless `claude -p`, cost/tokens from `--output-format json`.
 - `niia` — interactive model CLI (claude/codex/gemini) over the niia headless terminal, OFF metered
-  `-p`, metered per-run by **monometer incl. cache** (`harness/runners/niia.sh` + `meter.mjs`).
+  `-p`, metered per-run by **monometer incl. cache** through the Rust niia runner + `src/meter.rs`.
 Both run parent-stripped (`--setting-sources '' --disable-slash-commands --strict-mcp-config`) with a
 `--max-budget-usd` cap. Run **n ≥ 3** per arm for a median (these bugs have high variance).
 
@@ -54,8 +54,8 @@ Agent must end with `ROOTCAUSE: <file>::<fn>` and `FIX: <one sentence>`. `grade.
 Also extracts cost, tokens, tool-call count, and **tool-adoption** (monogram/codegraph calls).
 
 ## 6. Procedure — staged adaptive sampling (don't fix n blindly)
-1. `run.sh` clones the repo at the pinned tag and forces it pristine (no fix applied);
-   indexes per the tool adapter (records OOM forfeit).
+1. `monobench run` clones the repo at the pinned tag and forces it pristine (no fix applied);
+   indexes per the tool adapter's Rust-executed `index_steps` (records OOM forfeit).
 2. **n=1 — validity gate.** Run once and INSPECT before scaling: did the run produce a result, and
    for a tool arm, did the agent actually *use* the tool (`adopt > 0`)? If the tool wasn't used or
    the harness misbehaved, fix the adapter/prompt and redo — a non-using run is not a tool test.

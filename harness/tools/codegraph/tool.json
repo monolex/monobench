@@ -1,9 +1,13 @@
 {
   "name": "codegraph",
   "desc": "CodeGraph (MCP-native code knowledge graph). Delivered as an MCP server so its tools auto-inject. Set env CODEGRAPH to its entrypoint, e.g. CODEGRAPH='node /path/to/codegraph/dist/bin/codegraph.js'. NOTE: forfeits on Zig-heavy repos (V8 WASM-grammar OOM) — recorded as FORFEIT.",
-  "index": "${CODEGRAPH} init . >/dev/null 2>&1; ${CODEGRAPH} index .",
+  "index": "",
+  "index_steps": [
+    { "command": "${CODEGRAPH}", "args": ["init", "."], "quiet": true },
+    { "command": "${CODEGRAPH}", "args": ["index", "."] }
+  ],
   "skill": "",
   "deliver": "mcp",
-  "mcp": { "command": "sh", "args": ["-c", "${CODEGRAPH} serve --mcp --path ${REPO}"] },
+  "mcp": { "command": "${CODEGRAPH}", "args": ["serve", "--mcp", "--path", "${REPO}"] },
   "forfeit_grep": "out of memory|Fatal process out of memory|FatalProcessOutOfMemory|unable to open database"
 }

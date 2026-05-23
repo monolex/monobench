@@ -44,8 +44,8 @@ monobench
 - **monogram / codegraph** — the tools under test (each is a `harness/tools/<tool>/tool.json` adapter;
   codegraph is recorded FORFEIT when it can't index a repo, e.g. Zig).
 - **monometer** — independent token/cost meter to cross-check per-run `total_cost_usd`.
-- **monoterm / monolex-headless** — the planned `pty` runner drives an interactive model CLI over a
-  PTY (off metered `claude -p`), and generalizes the benchmark to any model CLI.
+- **niia headless terminal** — the Rust `niia` runner drives an interactive model CLI over a PTY
+  (off metered `claude -p`), and generalizes the benchmark to any model CLI.
 
 ## Full reference
 See [initiate.md](initiate.md) for all commands, arms/runners, metric, fairness rules, and env vars.

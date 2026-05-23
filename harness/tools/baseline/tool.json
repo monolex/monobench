@@ -2,6 +2,7 @@
   "name": "baseline",
   "desc": "Control arm: builtin Read/Grep/Glob/Bash only. No code-intelligence tool. Gets the shared depth directive like every arm, so the ONLY variable is the tool. Also the admission gate.",
   "index": "",
+  "index_steps": [],
   "skill": "",
   "deliver": "none",
   "forfeit_grep": ""
