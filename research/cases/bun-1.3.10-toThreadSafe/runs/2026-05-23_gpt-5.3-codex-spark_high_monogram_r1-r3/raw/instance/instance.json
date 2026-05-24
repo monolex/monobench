@@ -1,0 +1,31 @@
+{
+  "id": "bun-1.3.10-toThreadSafe",
+  "title": "bun 1.3.10 cross-thread string refcount UAF (crashed Claude Code)",
+  "repo": "https://github.com/oven-sh/bun",
+  "tag": "bun-v1.3.10",
+  "base_commit": "30e609e080",
+  "languages": ["zig", "cpp"],
+  "category": "use-after-free / reference-count mismanagement",
+  "crash_site": "src/string.zig",
+  "buggy_files_to_verify": [
+    "src/bun.js/bindings/BunString.cpp"
+  ],
+  "ground_truth": {
+    "root_cause_file": "src/bun.js/bindings/BunString.cpp",
+    "root_cause_fn": "BunString__toThreadSafe",
+    "decoy_fn": "toCrossThreadShareable",
+    "fix_pr": 30049,
+    "fix_commit": "1b82e1d4",
+    "fix_summary": "deref the old StringImpl before installing isolatedCopy(); remove the now-redundant orig.deref() in src/string.zig"
+  },
+  "grading": {
+    "full_must_name": ["BunString__toThreadSafe"],
+    "mechanism_keywords": ["deref", "isolatedCopy", "leak", "never released", "refcount", "ref count"],
+    "decoy_markers": ["toCrossThreadShareable"]
+  },
+  "admission": {
+    "note": "Admit only if baseline (depth-directive, no tool) does NOT reliably reach FULL. Run baseline first.",
+    "baseline_full_hit_rate_max": 0.5
+  },
+  "provenance": "Bundled in Claude Code v2.1.50; blamed for `panic: switch on corrupt value`, Windows BSODs, 1GB+ orphan processes, truncated files (Feb-Mar 2026). Fixed upstream by PR #30049."
+}

@@ -19,8 +19,9 @@ FLOW  every command ends in a [NEXT] hint — follow it and the trail walks the 
       (no command memorized in advance).  context ⇄ chain is the hub.  Full map: flow-guide.md
   ENTRY     index·reindex → search·stats·errors    prune → stats    boot → chain·deps
             stats → search·coupling·metrics
-  FIND      search → symbols·grep           css → symbols·chain
-  NAVIGATE  symbols → context·chain    grep → chain·context    chain → tree·context
+  FIND      search → region·symbols·grep/refgrep   css → symbols·chain
+  NAVIGATE  region → context·shallow-chain    symbols → context·chain
+            grep/refgrep → chain·context    chain → tree·context
             tree → context            context → chain·coupling    deps ⇄ rdeps → context
   AUDIT     coupling → context·chain·tauri-bind·css·important    errors → context
             metrics → context·chain    uncalled → chain    important → chain (+ migrate)
@@ -30,10 +31,21 @@ FLOW  every command ends in a [NEXT] hint — follow it and the trail walks the 
 │  COMMANDS                                                                    │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
-│  grep, g <pattern>    Search call expressions → function → chain             │
-│                       Finds pattern in call refs (e.g. conn.execute, emit)   │
-│                       Shows: [ref_kind] signature, imported_by, sibling      │
-│                       calls — richer than grep, entry point to chain         │
+│  grep, g <pattern>    Search raw code lines + structural refs                │
+│                       CODE HITS scan indexed files directly (native, no rg)  │
+│                       STRUCTURAL REFS search call/reference targets          │
+│                       --raw          Code hits only                          │
+│                       --refs         Structural refs only                    │
+│                       --comments     Include comment-only raw hits           │
+│                       -n <limit>     Max results (default: 20)               │
+│                       --chain        Show callers of containing function     │
+│                       --tree         Show call tree from containing function │
+│                       --depth N      Chain/tree depth (default: 2)           │
+│                       --json         JSON output                             │
+│                                                                              │
+│  refgrep, refs <pat>  Search call/reference targets → function → chain       │
+│                       Structural-only entry point to call graph. Broad       │
+│                       --chain output is capped with region-first NEXT.       │
 │                       -n <limit>     Max results (default: 20)               │
 │                       --chain        Show callers of containing function     │
 │                       --tree         Show call tree from containing function │
@@ -43,8 +55,16 @@ FLOW  every command ends in a [NEXT] hint — follow it and the trail walks the 
 │  search, s <query>    Search for files matching query                        │
 │                       -n <limit>     Max results (default: 10)               │
 │                       --cwd          Filter to current directory only        │
-│                       --explain      Show which identifiers drove the match  │
+│                       --explain      Show why; high limits compact + NEXT    │
 │                       --json         JSON output                             │
+│                                                                              │
+│  region, locate <q>   Rank functional regions from fuzzy, raw, refs, graph   │
+│  discover <q>         and coupling evidence. Best step after search when     │
+│                       you need "where is this implemented?", not only files. │
+│                       -n <limit>      Max regions (default: 5)               │
+│                       --score-debug   Show score components for tuning       │
+│                       --domain D      Bias coupling evidence by domain       │
+│                       --json          JSON output                            │
 │                                                                              │
 │  index, i <path>      Index source files in directory                        │
 │                       --ext ts,rs,js Custom extensions                       │
@@ -263,15 +283,18 @@ FLOW  every command ends in a [NEXT] hint — follow it and the trail walks the 
 │  "corrupt value" symptoms, do not repeat broad `search`. Pivot by ownership  │
 │  verbs and boundary contracts:                                               │
 │                                                                              │
-│    monogram grep "isolatedCopy" --chain --depth 2                            │
-│    monogram grep "leakRef" --chain --depth 2                                 │
-│    monogram grep "deref" --chain --depth 2                                   │
-│    monogram grep "ref" --chain --depth 2                                     │
+│    monogram region "ownership boundary ref deref leakRef isolatedCopy" -n 5  │
+│    monogram refgrep "isolatedCopy" --chain --depth 2                         │
+│    monogram refgrep "leakRef" --chain --depth 2                              │
+│    monogram refgrep "deref" --chain --depth 2                                │
+│    monogram refgrep "ref" --chain --depth 2                                  │
 │    monogram coupling --domain ffi --pattern "<candidate>" --all              │
 │    monogram context <candidate> --code 80                                    │
 │                                                                              │
 │  OK_Bound means the boundary is wired, not that ownership is correct.        │
-│  A same-file sibling helper is a decoy until you prove the balance.          │
+│  A same-file sibling helper is a decoy until you prove the balance. Broad    │
+│  ecosystem symbols like String/toSlice/fromJS/ref/deref need region/context  │
+│  before deep caller expansion.                                               │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
 

@@ -1,0 +1,6 @@
+The root cause is `src/bun.js/bindings/BunString.cpp::BunString__toThreadSafe`.
+
+It takes a `WTFStringImpl*`, calls `isolatedCopy()`, and then overwrites `str->impl.wtf` with the new impl when the copy differs, but it never drops the old implementation’s ownership. That leaves the original refcounted string live and leaks refs across repeated cross-thread conversions, which matches the long-running memory growth and eventually destabilizes string state until `src/string.zig` hits the corrupt-tag panic.
+
+ROOTCAUSE: /Users/macbook/.agents/skills/../tmp/monobench-work/bun/src/bun.js/bindings/BunString.cpp::BunString__toThreadSafe
+FIX: When `isolatedCopy()` returns a different impl, release/deref the old `WTFStringImpl` before storing the new one so ownership is transferred without leaking the original ref.

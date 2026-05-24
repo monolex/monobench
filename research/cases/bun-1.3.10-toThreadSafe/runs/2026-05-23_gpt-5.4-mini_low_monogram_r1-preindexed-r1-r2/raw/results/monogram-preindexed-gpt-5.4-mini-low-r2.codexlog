@@ -1,0 +1,4 @@
+`BunString__toThreadSafe` in [`src/bun.js/bindings/BunString.cpp`](/tmp/monobench-work/bun/src/bun.js/bindings/BunString.cpp) is swapping `str->impl.wtf` to an `isolatedCopy()` without releasing the previous `StringImpl`, so every cloned cross-thread string leaks one refcounted implementation and the heap grows until the string machinery starts corrupting state.
+
+ROOTCAUSE: /tmp/monobench-work/bun/src/bun.js/bindings/BunString.cpp::BunString__toThreadSafe  
+FIX: Deref the old `StringImpl` when `isolatedCopy()` replaces it, or perform the swap with an owning `Ref` so the previous ref is always released.

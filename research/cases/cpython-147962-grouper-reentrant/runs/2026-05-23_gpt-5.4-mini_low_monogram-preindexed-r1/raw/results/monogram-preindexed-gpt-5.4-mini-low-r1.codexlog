@@ -1,0 +1,4 @@
+Crash pattern: calling `next()` on a `_grouper` while a re-entrant `__eq__` can advance the owning `groupby` leaves `_grouper_next()` comparing borrowed pointers that may already have been cleared/freed. The adjacent `groupby_next()` path is the decoy; it already snapshots `tgtkey` and `currkey` with strong refs before `PyObject_RichCompareBool`, but `_grouper_next()` does not.
+
+ROOTCAUSE: Modules/itertoolsmodule.c::_grouper_next
+FIX: Take strong references to `igo->tgtkey` and `gbo->currkey` before the equality check, then release them after `PyObject_RichCompareBool()` so re-entrant advancement cannot free the objects mid-compare.

@@ -1,0 +1,4 @@
+`BunString__transferToJS` is doing unbalanced ownership on the `WTF::StringImpl*` bridge: when a BunString already in the `WTFStringImpl` form is transferred, the function builds a `WTF::String` around `bunString->impl.wtf` and then immediately `deref()`s that impl before JS has an independent, guaranteed-owning reference, so later accesses can hit a freed or corrupted impl, which matches the intermittent `switch on corrupt value` crash in `src/string.zig` during long async/worker runs with growing memory.
+
+ROOTCAUSE: src/bun.js/bindings/BunString.cpp::BunString__transferToJS
+FIX: Remove the manual `deref()` (or replace it with a single, explicit ownership handoff like `adoptRef`/`move` semantics) so the `StringImpl` refcount is decremented only once after JS truly takes ownership.

@@ -1,0 +1,29 @@
+{
+  "id": "ksmbd-37899",
+  "title": "ksmbd cross-connection use-after-free on sess->user (CVE-2025-37899) — the o3-discovered SMB3 session-logoff UAF",
+  "repo": "https://github.com/namjaejeon/ksmbd",
+  "tag": "28d72614627b",
+  "base_commit": "28d72614627b",
+  "languages": ["c"],
+  "category": "use-after-free / cross-connection concurrency (object lifetime)",
+  "crash_site": "the SMB2 session-setup / request path that READS sess->user (e.g. smb2_sess_setup → user_guest(sess->user), sess->user->uid) — the freed-pointer read, NOT where the free happens",
+  "buggy_files_to_verify": ["smb2pdu.c"],
+  "ground_truth": {
+    "root_cause_file": "smb2pdu.c",
+    "root_cause_fn": "smb2_session_logoff",
+    "decoy_fn": "smb2_sess_setup — the Kerberos-auth free of sess->user (CVE-2025-37778), an adjacent sibling UAF on the SAME object that is the plausible-but-wrong answer",
+    "fix_pr": 0,
+    "fix_commit": "5f81c9ec0a28",
+    "fix_summary": "session logoff frees sess->user (ksmbd_free_user) while another connection bound to the same session is still using it; the handler only waited for its OWN connection's requests to idle. Fix: block new requests on the session and wait for ALL bound connections' in-flight requests before freeing, so no concurrent user dereference survives the free."
+  },
+  "grading": {
+    "full_must_name": ["smb2_session_logoff"],
+    "mechanism_keywords": ["use-after-free", "sess->user", "ksmbd_free_user", "another connection", "session bind", "binding", "concurrent", "freed", "still in use", "cross-connection", "own connection"],
+    "decoy_markers": ["smb2_sess_setup", "kerberos", "krb5", "ksmbd_krb5_authenticate", "destroy_previous_session", "preauth"]
+  },
+  "admission": {
+    "note": "NON-DISCRIMINATING / down-weighted (2026-05-22): baseline-haiku FULL 1/1 ($0.31, no tool) AND monogram-haiku FULL 1/1 — both solved it; the famous CVE-2025-37899 is in training data as prose, so even tool-less haiku recalls smb2_session_logoff. Kept for the record per SPEC §3, but it fails the admission gate. Prefer obscure fuzzer-found bugs (see bun-30196). Original rationale (now moot — the cross-connection structure is real but contamination beats the gate): symptom (freed-pointer READ in the setup/request path) != cause (the free in the session-teardown handler on a DIFFERENT connection bound to the same session), linked only by sess->user ownership across connections — no text bridge. base_commit 28d72614627b predates BOTH the logoff fix (target) and the kerberos fix, so the kerberos UAF is live as a decoy. o3 found this at ~1/100 with the full 12k-LoC handler set in-context (Heelan 2025), so a strong baseline is expected to struggle or land on the kerberos decoy.",
+    "baseline_full_hit_rate_max": 0.5
+  },
+  "provenance": "CVE-2025-37899 (CVSS 7.8) — the first publicly documented NOVEL vulnerability found by an LLM: Sean Heelan used OpenAI o3 to discover this UAF in ksmbd's SMB2 LOGOFF handler (https://sean.heelan.io/2025/05/22/how-i-used-o3-to-find-cve-2025-37899-a-remote-zeroday-vulnerability-in-the-linux-kernels-smb-implementation/). Mainline Linux fix 2fc9feff45d9 (6.15-rc5; stable 6.14.6 / 6.12.28). This instance uses the standalone mirror namjaejeon/ksmbd: target fix 5f81c9ec0a28 'ksmbd: Fix use-after-free in session logoff' (2025-04-22); decoy bug fix 3e2842a1b335 'ksmbd: Fix use-after-free in kerberos authentication' (CVE-2025-37778); base 28d72614627b = parent of both, so both UAFs are present. codegraph indexes C (no forfeit) — this is a pure monogram-vs-baseline call-graph/ownership test on C, complementing the zig-heavy instances."
+}

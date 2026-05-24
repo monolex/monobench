@@ -1,0 +1,4 @@
+The root cause is `src/bun.js/VirtualMachine.zig::refCountedResolvedSource`: it builds a `ResolvedSource` from a `RefString` but leaves `source_code_needs_deref = false` and never balances the `WTFStringImpl` ownership for the `source_code` copy, so the refcounted string survives too long and can later be touched after its underlying impl has been released or corrupted during long-running async/module lifetimes.
+
+ROOTCAUSE: /tmp/monobench-work/bun/src/bun.js/VirtualMachine.zig::refCountedResolvedSource
+FIX: Make the `ResolvedSource` own and release the `RefString`-backed `source_code` with a balanced ref/deref path instead of suppressing teardown.

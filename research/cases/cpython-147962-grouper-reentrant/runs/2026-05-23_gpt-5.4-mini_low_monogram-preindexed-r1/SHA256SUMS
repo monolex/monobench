@@ -1,0 +1,8 @@
+9917a98507202c427a1b3b163c74cebb5762a2488053d5b45c84e1b818606816  raw/results/monogram-preindexed-gpt-5.4-mini-low-r1.codexlog
+9a6796a1cea17a483c38d40d8cfaab0c2a2854c0937c6d8005ce64d3b08c423d  raw/results/monogram-preindexed-gpt-5.4-mini-low-r1.answer.txt
+691f62624936af38f0e6b2ac6c8b43162a23696696f62d5037d9eb2b43bd73c5  raw/results/mcp-empty-monogram-preindexed-gpt-5.4-mini-low-r1.json
+cf8f455d96999d2db0298ce436d75cd93a514763fff8a2fd09a6ca50c495fa65  raw/results/monogram-preindexed-gpt-5.4-mini-low-r1.err
+6fcbd65440a2fa240fc5db670ef3615a4f6ec336512e846a13e5e0dbe456a98b  raw/results/monogram-preindexed-gpt-5.4-mini-low-r1.meter.json
+6e2a9cff53affdba13cd13a02273d1fcd46fc710814548b0a0cf7b5f439fabc6  raw/instance/instance.json
+cd7b48bc907947936715f6eada91d42dee6e8147e8707e9aa20fc13dddc2374e  raw/instance/symptom.md
+49b4e1b44c5818e4d5cbe6b170e17fe79a23882142590b0481243056fc37366d  raw/instance/ground_truth.md

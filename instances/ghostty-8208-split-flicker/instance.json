@@ -17,9 +17,9 @@
     "fix_summary": "stop clearing tree_bin before the async rebuild; debounce + keep old tree visible, swap the bin child atomically to the new root, and reuse existing leaf SurfaceScrolledWindow widgets (reparent) instead of recreating them"
   },
   "grading": {
-    "full_must_name": ["split_tree"],
+    "full_must_name": ["propTree", "onRebuild"],
     "mechanism_keywords": ["clear", "rebuild", "blank frame", "reparent", "atomic", "reuse", "unparent", "tree_bin", "debounce"],
-    "decoy_markers": []
+    "decoy_markers": ["setTree", "boxedCopy", "boxed ownership", "deep clone"]
   },
   "admission": {
     "note": "Guaranteed discriminating: open ~6 months; the human author + Opus 4.6 + lower Codex levels all failed. Only Codex 5.3 (xhigh) solved it. Run baseline for the record anyway.",

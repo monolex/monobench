@@ -3,7 +3,7 @@
   "desc": "monogram (cli) with a THIN lead.md — NO ownership/FFI recipe hand-fed. Only 'run monogram, follow its [NEXT]'. Isolates whether monogram's OWN runtime [NEXT] (now live in the installed binary) steers a weak model to the FFI/ownership audit, vs the harness recipe doing it (monogram-discover).",
   "index": "",
   "index_steps": [
-    { "command": "monogram", "args": ["index", "."] }
+    { "command": "monogram", "args": ["index", ".", "--no-workspace"] }
   ],
   "skill": "skill-discover.md",
   "deliver": "cli",

@@ -38,20 +38,38 @@ Each tool is a drop-in adapter `harness/tools/<name>/tool.json`:
   is the tool. A tool whose index output matches `forfeit_grep` is recorded **FORFEIT** (e.g.
   codegraph OOMs on Zig). Add a tool: `cp -r harness/tools/_TEMPLATE harness/tools/<name>`.
 
-The model invocation is a pluggable **runner** (`MONOBENCH_RUNNER`):
-- `claude-p` (default) — headless `claude -p`, cost/tokens from `--output-format json`.
-- `niia` — interactive model CLI (claude/codex/gemini) over the niia headless terminal, OFF metered
-  `-p`, metered per-run by **monometer incl. cache** through the Rust niia runner + `src/meter.rs`.
-Both run parent-stripped (`--setting-sources '' --disable-slash-commands --strict-mcp-config`) with a
-`--max-budget-usd` cap. Run **n ≥ 3** per arm for a median (these bugs have high variance).
+Model invocation is split into two axes:
+- `--cli` — the CLI environment under test: `claude`, `codex`, `agy`, or `gemini`.
+- `--model` — the full model name/alias recorded for that CLI environment.
+- `--via` — execution path: `direct` (default) or `niia` headless terminal.
+
+This is intentionally not a single "runner" axis: `agy` may run a Claude model, and `claude` may run a
+full model name rather than an alias. Result labels are `<tool>-<cli>-<model>-<effort>-rN-t<start_ms>`, so
+`baseline-agy-claude-opus-4.1-low-r1-t1779581234567` and
+`baseline-claude-claude-opus-4.1-low-r1-t1779581234568` remain distinct even if their run numbers match.
+`rN` is an automatic repeat index, not the experiment's memory. Store human intent in
+`<run>.meta.json` with `--tag`, `--note`, or `monobench note`; metadata must not alter artifact
+identity or backward-compatible label parsing.
+Run one CLI+model per `monobench matrix` command, then repeat the command for the next model. Run
+**n ≥ 3** per arm for a median (these bugs have high variance).
+
+For agy, `--model` and `--effort` are requested labels unless agy exposes a stable enforcement
+interface. The meter records `requested_model`, `requested_effort`, `observed_model` when it can be
+parsed from agy logs, and `model_enforced:false` / `effort_enforced:false`. Agy cost/token fields are
+unavailable rather than zero-valued measurements.
 
 ## 5. Output contract & grading
-Agent must end with `ROOTCAUSE: <file>::<fn>` and `FIX: <one sentence>`. `grade.mjs` scores:
+Agent must end with `ROOTCAUSE: <file>::<fn>` and `FIX: <one sentence>`. `monobench grade` gives an
+automatic keyword score:
 - **FULL** — names `grading.full_must_name` AND a `grading.mechanism_keywords` term.
 - **NAME_ONLY** — names the function but not the mechanism.
 - **DECOY** — names a `grading.decoy_markers` function instead.
 - **MISS** — none.
-Also extracts cost, tokens, tool-call count, and **tool-adoption** (monogram/codegraph calls).
+Also extracts cost, tokens, tool-call count, and **tool-adoption** (monogram/codegraph calls). Cost
+or token medians exclude runs whose meter marks `cost_available:false` or `tokens_available:false`.
+For final benchmark truth, run `monobench judge <id> <run>` in a separate answer-key-aware context,
+then record the checked result with `monobench review <id> <run> --final <GRADE> --reason <TEXT>`.
+The final review is stored as `results/<id>/<run>.review.json`.
 
 ## 6. Procedure — staged adaptive sampling (don't fix n blindly)
 1. `monobench run` clones the repo at the pinned tag and forces it pristine (no fix applied);
@@ -66,7 +84,7 @@ Also extracts cost, tokens, tool-call count, and **tool-adoption** (monogram/cod
    more). Don't pay for 9 runs on an arm that's already stable at 3.
 5. Run the **admission gate** (baseline) the same way; if baseline FULL-solves cheaply *and stably*,
    the instance is non-discriminating → down-weight.
-6. `grade.mjs` per run → `monobench report` aggregates medians + ranges + the wobble verdict.
+6. `monobench grade` per run → `monobench report` aggregates medians + ranges + the wobble verdict.
 
 ## 7. Validity notes (hard-won)
 - **No reading the fix from git history.** The on-demand clone carries full history — *including the

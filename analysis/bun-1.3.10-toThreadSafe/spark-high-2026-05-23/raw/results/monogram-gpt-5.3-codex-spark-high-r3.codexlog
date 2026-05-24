@@ -1,0 +1,4 @@
+Root cause is in the Zig↔C++ string ownership seam: `src/string.zig` assumes only one refcount branch adjustment, but `BunString__toThreadSafe` can replace `str->impl.wtf` with a new `StringImpl` while never releasing the old one, so the old/new ownership counts diverge across thread-safe conversions; this creates a long-run refcount/invariant violation that shows up as corrupt `src/string.zig` values under worker/async pressure.
+
+ROOTCAUSE: /private/tmp/monobench-work/wt/monogram-gpt-5.3-codex-spark-high-r3-37754/src/bun.js/bindings/BunString.cpp::BunString__toThreadSafe
+FIX: In the pointer-swap branch, release the previous impl before overwrite (or equivalently pair it with an `orig.deref()` path) so the old `StringImpl` ownership is transferred exactly once and the refcount remains balanced when isolation creates a new impl.

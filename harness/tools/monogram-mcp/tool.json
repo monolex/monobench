@@ -3,7 +3,7 @@
   "desc": "Same monogram index — but delivered as FIRST-CLASS MCP tools (monogram_search/symbols/chain/…) instead of a CLI suggestion. Tests whether forced-tool delivery lifts adoption on weaker models.",
   "index": "",
   "index_steps": [
-    { "command": "monogram", "args": ["index", "."] }
+    { "command": "monogram", "args": ["index", ".", "--no-workspace"] }
   ],
   "skill": "skill-mcp.md",
   "deliver": "mcp",

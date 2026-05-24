@@ -1,0 +1,41 @@
+{
+  "id": "cpython-147962-grouper-reentrant",
+  "title": "gh-146613: Fix re-entrant use-after-free in itertools._grouper",
+  "repo": "https://github.com/python/cpython",
+  "tag": "c1a4112c225e",
+  "base_commit": "c1a4112c225e",
+  "languages": [
+    "c",
+    "python"
+  ],
+  "category": "re-entrant UAF (itertools._grouper)",
+  "crash_site": "TODO — where the crash is OBSERVED (must be a DIFFERENT fn than the cause)",
+  "buggy_files_to_verify": [
+    "Misc/NEWS.d/next/Library/2026-04-01-11-05-36.gh-issue-146613.GzjUFK.rst",
+    "Modules/itertoolsmodule.c"
+  ],
+  "ground_truth": {
+    "root_cause_file": "Misc/NEWS.d/next/Library/2026-04-01-11-05-36.gh-issue-146613.GzjUFK.rst",
+    "root_cause_fn": "TODO",
+    "decoy_fn": "TODO — adjacent plausible-but-wrong fn (often the crash site itself)",
+    "fix_pr": 147962,
+    "fix_commit": "fc7a188fe70a",
+    "fix_summary": "TODO — see ground_truth.md"
+  },
+  "grading": {
+    "full_must_name": [
+      "TODO"
+    ],
+    "mechanism_keywords": [
+      "TODO"
+    ],
+    "decoy_markers": [
+      "TODO"
+    ]
+  },
+  "admission": {
+    "note": "PROVISIONAL scaffold. Author TODO before running: hide the API in symptom.md, verify crash-fn≠cause-fn, fill grading keys, run the thin arm.",
+    "baseline_full_hit_rate_max": 0.5
+  },
+  "provenance": "https://github.com/python/cpython/pull/147962 — gh-146613: Fix re-entrant use-after-free in itertools._grouper (merged 2026-04-02); base c1a4112c225e = merge first-parent."
+}

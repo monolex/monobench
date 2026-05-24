@@ -1,0 +1,8 @@
+The root cause is `smb2_session_logoff()` in `smb2pdu.c`.
+
+It marks all bound connections for reconnect, but then calls `ksmbd_conn_wait_idle(conn)`, which only waits for the current connection’s in-flight requests. In SMB3 multichannel, the same `ksmbd_session` can still be active on another bound connection. After waiting only on the local connection, `smb2_session_logoff()` frees `sess->user` and sets it to `NULL`, while another worker can still be inside a normal request path using the same session and reading `sess->user`, for example through `rpc_context_flags()` or `smb3_11_final_sess_setup_resp()`.
+
+The adjacent decoy is the normal session destruction path via `ksmbd_user_session_put()` / `ksmbd_session_destroy()`: that frees `sess->user` only when the session refcount reaches zero. The failing path bypasses that ownership guarantee by freeing the user object directly during SMB2 logoff.
+
+ROOTCAUSE: smb2pdu.c::smb2_session_logoff
+FIX: Before freeing `sess->user`, wait for all connections/channels bound to that session to become idle, e.g. use the session-id aware idle wait path instead of `ksmbd_conn_wait_idle(conn)`.
