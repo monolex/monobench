@@ -25,7 +25,7 @@ const STRIP_ENV: [&str; 6] = [
     "CLAUDE_CODE_EXECPATH",
 ];
 
-fn repo_basename(url: &str) -> String {
+pub(crate) fn repo_basename(url: &str) -> String {
     let last = url.rsplit('/').next().unwrap_or(url);
     last.strip_suffix(".git").unwrap_or(last).to_string()
 }
@@ -34,10 +34,14 @@ fn repo_basename(url: &str) -> String {
 struct Worktree<'a> {
     base: PathBuf,
     wt: PathBuf,
+    base_lock: PathBuf,
     lock: &'a Mutex<()>,
 }
 impl Drop for Worktree<'_> {
     fn drop(&mut self) {
+        // cross-process base guard (Option A): `git worktree remove` mutates the shared base's
+        // worktree metadata, so serialize it against another process's add/remove on the same base.
+        let _flk = acquire_file_lock(&self.base_lock, 600, Duration::from_millis(100));
         let _g = self.lock.lock().unwrap();
         Command::new("git")
             .arg("-C")
@@ -111,6 +115,9 @@ fn shared_clone(
     wtlock: &Mutex<()>,
 ) -> Result<PathBuf, String> {
     let c = PathBuf::from(format!("{work}/{}", repo_basename(repo_url)));
+    // cross-process guard (Option A): serialize clone/checkout of the shared dir across processes.
+    let base_lock = PathBuf::from(format!("{work}/{}.lock", repo_basename(repo_url)));
+    let _flk = acquire_file_lock(&base_lock, 6000, Duration::from_millis(100));
     let _g = wtlock.lock().unwrap();
     if !c.join(".git").is_dir() {
         Command::new("git")
@@ -772,6 +779,19 @@ pub fn run(
     if isolate {
         running_guard.set("clone", "worktree");
         let base = PathBuf::from(format!("{work}/{}-base", repo_basename(&repo_url)));
+        let base_lock = PathBuf::from(format!("{work}/{}-base.lock", repo_basename(&repo_url)));
+        // Cross-process base guard (Option A): separate monobench processes (e.g. a `sweep` and a
+        // `matrix`) sharing this repo base serialize their clone + worktree add. The in-process
+        // `wtlock` only orders threads within ONE process; this O_EXCL lock orders them ACROSS
+        // processes. Held only over clone/add (NOT the run); different repos ⇒ different lock files
+        // ⇒ still parallel. `flk.is_none()` (budget exhausted) degrades to the in-process lock.
+        let flk = acquire_file_lock(&base_lock, 6000, Duration::from_millis(100));
+        if flk.is_none() {
+            eprintln!(
+                "  ⚠ {}-base.lock not acquired in 600s — proceeding (in-process lock only)",
+                repo_basename(&repo_url)
+            );
+        }
         {
             let _g = wtlock.lock().unwrap();
             if !base.join(".git").is_dir() {
@@ -802,10 +822,12 @@ pub fn run(
                 .output()
                 .ok();
         }
+        drop(flk); // release cross-process base lock before the (long) run
         clone = wt.clone(); // ${REPO} is substituted from `clone` directly (no process-global env — matrix runs threads)
         _wt_guard = Some(Worktree {
             base,
             wt,
+            base_lock,
             lock: wtlock,
         });
     } else {
@@ -928,10 +950,36 @@ pub fn run(
         return 1;
     }
 
+    // agy model preflight (mirrors the codex model-mismatch guard above): `agy --print` has no
+    // --model flag, so the model is fixed by ~/.gemini/antigravity-cli/settings.json. Rather than
+    // silently record a run under the wrong label, refuse unless the configured model matches the
+    // requested --model. This keeps the agy model axis honest — one model per agy settings.
+    if cli == "agy" {
+        match agy_settings_model() {
+            Some(actual) if agy_model_norm(&actual) == agy_model_norm(model) => {}
+            Some(actual) => {
+                eprintln!(
+                    "agy model mismatch: --model is '{model}' but agy is configured for '{actual}'"
+                );
+                eprintln!(
+                    "agy --print has no --model flag; set the model in ~/.gemini/antigravity-cli/settings.json to match, then run one matrix command per model"
+                );
+                return 1;
+            }
+            None => {
+                eprintln!(
+                    "agy preflight: cannot read model from ~/.gemini/antigravity-cli/settings.json — refusing rather than record an unverified model"
+                );
+                return 1;
+            }
+        }
+    }
+
     running_guard.set("solver", &format!("cli={cli} via={via} model={model}"));
     match (via.as_str(), cli.as_str()) {
         ("niia", _) => {
             if let Err(e) = crate::niia_runner::run(
+                root,
                 &clone,
                 &format!("{sys}\n\n{q}\n"),
                 "ROOTCAUSE",
@@ -1027,8 +1075,22 @@ pub fn run(
             let log = out.join(format!("{runid}.agy.log"));
             let git_deny = install_git_deny_wrapper(&runid);
             let t0 = std::time::Instant::now();
-            let mut cmd = Command::new("agy");
+            // agy ignores the process cwd (it runs in ~/.gemini/antigravity-cli/scratch), so the
+            // repo under test must be passed as a workspace dir (--add-dir) or agy indexes 0 files
+            // and roams the filesystem. The sandbox-exec read-jail then stops it reading the
+            // benchmark's own answer files it would otherwise find (instance.json / ground_truth.md).
+            let jail = agy_read_jail_profile(root, &runid);
+            let mut cmd = match &jail {
+                Some(p) => {
+                    let mut c = Command::new("sandbox-exec");
+                    c.arg("-f").arg(p).arg("agy");
+                    c
+                }
+                None => Command::new("agy"),
+            };
             cmd.current_dir(&clone)
+                .arg("--add-dir")
+                .arg(&clone)
                 .arg("--log-file")
                 .arg(&log)
                 .arg("--print-timeout")
@@ -1064,13 +1126,19 @@ pub fn run(
                 ),
                 Err(e) => (None, false, Some(format!("failed to run agy: {e}"))),
             };
+            // Verified, not enforced: preflight already refused on a settings≠label mismatch;
+            // here we confirm the model agy actually logged matches the requested label.
+            let model_verified = observed_model
+                .as_deref()
+                .map(|o| agy_model_norm(o) == agy_model_norm(model))
+                .unwrap_or(false);
             let meter = serde_json::json!({
                 "runner": "agy",
                 "model": model,
                 "requested_model": model,
                 "requested_effort": effort,
                 "observed_model": observed_model,
-                "model_enforced": false,
+                "model_enforced": model_verified,
                 "effort_enforced": false,
                 "tokens": null,
                 "cost_usd": null,
@@ -1383,6 +1451,62 @@ fn prepend_path(cmd: &mut Command, dir: &Path) {
     if let Ok(joined) = std::env::join_paths(paths) {
         cmd.env("PATH", joined);
     }
+}
+
+/// macOS `sandbox-exec` read-jail for agy (used by both the direct and niia runners). agy ignores
+/// the process cwd and roams the filesystem under `--dangerously-skip-permissions`; left unjailed
+/// it reads the benchmark's own answer files (`root/instances/<id>/{instance.json,ground_truth.md}`
+/// and `root/research`), turning a "solve" into a contaminated lookup. This profile lets agy run
+/// and read everything else (its config, the `--add-dir` clone, the network) but DENIES reading
+/// those answer dirs — both the canonical and raw `root` paths, to cover symlinked roots.
+///
+/// Returns the profile path, or `None` on non-macOS / write failure, in which case the caller runs
+/// agy unwrapped rather than failing the run (degrade, don't break).
+pub(crate) fn agy_read_jail_profile(root: &Path, tag: &str) -> Option<PathBuf> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let canon = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let bases: Vec<PathBuf> = if canon == root {
+        vec![canon]
+    } else {
+        vec![canon, root.to_path_buf()]
+    };
+    let mut profile = String::from("(version 1)\n(allow default)\n");
+    for base in &bases {
+        for sub in ["instances", "research"] {
+            profile.push_str(&format!(
+                "(deny file-read* (subpath {:?}))\n",
+                base.join(sub).to_string_lossy()
+            ));
+        }
+    }
+    let path = std::env::temp_dir().join(format!("monobench-agy-jail-{tag}.sb"));
+    std::fs::write(&path, profile).ok()?;
+    Some(path)
+}
+
+/// The model agy will actually use in `--print` mode. Print mode has NO `--model` flag (verified:
+/// `agy --model=…` → "flags provided but not defined"), so the model is whatever the GLOBAL
+/// settings file says — monobench cannot set it per-run via CLI, and editing that one shared file
+/// would race parallel runs. So we read it and verify instead of pretending `--model` controls it.
+pub(crate) fn agy_settings_model() -> Option<String> {
+    let home = std::env::var_os("HOME")?;
+    let p = PathBuf::from(home).join(".gemini/antigravity-cli/settings.json");
+    read_json(&p)
+        .get("model")
+        .and_then(Value::as_str)
+        .map(|s| s.to_string())
+}
+
+/// Compare model identifiers loosely: lowercased, alphanumerics only. So agy's display name
+/// "Gemini 3.5 Flash (Medium)" and the label "gemini-3.5-flash-medium" both reduce to
+/// "gemini35flashmedium" and match — covering the model AND the reasoning suffix together.
+pub(crate) fn agy_model_norm(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .flat_map(|c| c.to_lowercase())
+        .collect()
 }
 
 fn parse_agy_conversation_id(log_path: &Path) -> Option<String> {

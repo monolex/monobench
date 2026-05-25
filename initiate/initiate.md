@@ -11,9 +11,15 @@ COMMANDS
   list                       List benchmark instances (id + title).
   tools                      List tool adapters you can run as arms (baseline/monogram/monogram-mcp/
                              monogram-thin/codegraph/yours).
-  status <id> [--detail]     Status of runs with time, active phase, workers. --detail adds file size/age.
+  status <id> [--detail]     Runs in chronological order (oldest→newest), each with its UTC start time
+                             ("MM-DD HH:MMZ"; "—" = legacy run with no embedded start time), state,
+                             active phase, workers. --detail adds file size/age.
+                             Shows the active matrix (pid · cli/model · elapsed) for this instance.
+                             Each running run shows `· idle Ns` (`· ⚠ idle Ns` if its output log has
+                             stalled ≥5m) — the real "alive vs hung" signal (CPU sits ~0 while reasoning).
                              --live [--every N] [--count N] refreshes recursively for a terminal pane.
   watch [--live]             Global status across instances (done/FULL/running + active workers).
+                             Shows the running matrix (pid · cli/model · elapsed) — no ad hoc tail/pgrep.
                              --live [--every N] [--count N] refreshes recursively for a terminal pane.
                              Works from another cwd by remembering or inferring the real result root.
   stop                       Gracefully stop an active matrix after in-flight runs finish.
@@ -30,6 +36,7 @@ COMMANDS
       [--tools a,b]          Tool arms to compare, e.g. baseline,monogram.
       [--cli c]              CLI environment: claude | codex | agy | gemini.
       [--model x]            Full model label for this command. Repeat the matrix command for the next model.
+                             (agy: must match ~/.gemini/antigravity-cli/settings.json model, else refused.)
       [--via direct|niia]    direct by default; niia drives the CLI through the headless terminal.
       [--effort e]           Effort label and CLI-specific effort flag where supported.
       [--prepared]           Run `prepare` first. In worktree mode, copy the prepared monogram DB
@@ -64,9 +71,12 @@ COMMANDS
                              For agy, falls back from .agy.jsonl to live transcript_full.jsonl.
   export <id> <run>          Render one run's full evidence transcript/log to
                              results/<id>/<run>.md for monomento indexing/search.
-  report <id>                Per-CLI/MODEL comparison: FULL Hit-rate, median $/tokens/time, mono% adoption.
-                             Failures (FORFEIT/NO_RESULT) are listed separately at the bottom.
-  summary                    Cross-INSTANCE leaderboard: FULL hit-rate + median wall time per arm.
+  report <id> [--since DUR]  Per-CLI/MODEL comparison: FULL Hit-rate, median $/tokens/time, mono% adoption.
+                             Per-run rows are chronological (oldest→newest) with a "started" column (UTC
+                             start time); failures (FORFEIT/NO_RESULT) listed separately at the bottom.
+                             --since 9h|30m|2d windows to runs STARTED in the period (label -t<ms>,
+                             mtime fallback for legacy labels) — isolate one session from all-time totals.
+  summary [--since DUR]      Cross-INSTANCE leaderboard: FULL hit-rate + median wall time per arm.
   adoption <id>              Per-run tool-call + monogram-subcommand breakdown (calls/share/first-use/
                              fails/mix) — for CLI and MCP delivery. "Did the agent actually use it?"
   monogram-audit <id>        Diagnose monogram command/result failure patterns in solver telemetry
@@ -93,11 +103,18 @@ ARMS = TOOL ADAPTERS (pluggable — define your own)
 CLI / MODEL AXES
   --cli claude   direct `claude -p --model <model>` (cost/tokens from stream-json). Default for Claude aliases.
   --cli codex    direct `codex exec -m <model>`; effort → model_reasoning_effort.
-  --cli agy      direct `agy --print`; model/effort are requested labels only because agy has no
-                 stable model/effort flag. Meter records requested_model, observed_model if parsed,
-                 model_enforced:false, effort_enforced:false, and unavailable cost/tokens.
-  --via niia     drive the selected CLI through the niia headless terminal (write/wait-idle/get-answer).
-                 For agy, meter is marked unsupported until agy telemetry parsing is implemented.
+  --cli agy      direct `agy --print` (no --model flag in print mode → the model is whatever
+                 ~/.gemini/antigravity-cli/settings.json says). PREFLIGHT refuses the run if that
+                 configured model != --model; post-run observed_model is verified, so model_enforced
+                 reflects the real match (effort stays label-only). The repo is handed to agy via
+                 --add-dir (it ignores cwd), and reads are jailed with sandbox-exec on macOS so agy
+                 cannot read the gated ground truth. Cost/tokens unavailable.
+  --via niia     drive the selected CLI through the niia headless terminal (write/wait-idle/get-answer);
+                 picks a live ATTACHED session (detached zombies are skipped). For agy it runs
+                 `agy --print` with --dangerously-skip-permissions + --add-dir + the sandbox-exec
+                 read-jail, and waits for completion via a sentinel file (no premature empty capture).
+                 NOTE: agy answer-capture from the PTY is still lossy vs --via direct — prefer direct
+                 for agy.
                  For custom niia commands, MONOBENCH_CLI can override the spawn command.
   Result labels are `<tool>-<cli>-<model>-<effort>-rN-t<start_ms>`, e.g.
     monogram-agy-claude-opus-4.1-low-r1-t1779581234567
@@ -134,6 +151,7 @@ FLOW  (every command ends with [NEXT]; no command dead-ends — monogram-style d
   scan conclusions (all runs):  evidence <id> --pattern ROOTCAUSE → evidence <id> <run>
   watch live runs:              matrix <id> … → watch --live  /  status <id> --live
   cross-instance leaderboard:   summary → report <id>
+  isolate one session's score:  report <id> --since 9h   (all-time totals conflate old arms/configs)
 
 EXAMPLES
   monobench list
@@ -147,7 +165,7 @@ EXAMPLES
   monobench matrix bun-1.3.10-toThreadSafe --tools baseline,monogram --cli claude --model haiku --runs 3 --jobs 2
   monobench matrix bun-1.3.10-toThreadSafe --tools baseline,monogram --cli codex --model gpt-5.3-codex-spark --effort high --runs 2 --prepared --tag lockfix-spark --note "lock+grep-probe 이후 재검증"
   monobench matrix bun-1.3.10-toThreadSafe --tools baseline,monogram --cli codex --model gpt-5.4-mini --effort low --runs 2 --jobs 2
-  monobench matrix bun-1.3.10-toThreadSafe --tools baseline,monogram --cli agy --model claude-opus-4.1 --effort low --runs 2 --jobs 2
+  monobench matrix bun-1.3.10-toThreadSafe --tools baseline,monogram --cli agy --model gemini-3.5-flash-medium --runs 2 --jobs 2   # agy model = ~/.gemini/antigravity-cli/settings.json (must match --model)
   monobench report bun-1.3.10-toThreadSafe
   monobench judge  bun-1.3.10-toThreadSafe monogram-codex-gpt-5.4-mini-low-r1-t1779581234567 --model gpt-5.5 --write
   monobench review bun-1.3.10-toThreadSafe monogram-codex-gpt-5.4-mini-low-r1-t1779581234567 --final FULL --reason "root cause and mechanism match" --judge-model gpt-5.5

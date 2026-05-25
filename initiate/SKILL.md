@@ -20,8 +20,9 @@ monobench
 
 ## When to Use
 - Comparing whether a code-intelligence tool earns its keep (root-cause Hit-rate, tokens-per-correct).
-- Comparing CLI environments and models on real bugs (`--cli agy --model claude-opus-4.1` is distinct
-  from `--cli claude --model claude-opus-4.1`).
+- Comparing CLI environments and models on real bugs (`--cli agy --model gemini-3.5-flash-medium` is
+  distinct from `--cli claude --model <model>`; agy reads its model from
+  ~/.gemini/antigravity-cli/settings.json and the run is refused unless it matches `--model`).
 - Adding a new real bug as a reproducible benchmark instance.
 - Checking that a candidate problem is even *fair* (the admission gate rejects grep-solvable toys).
 
@@ -44,6 +45,7 @@ Example flows (the detailed way to use it):
 - Scan conclusions across runs: `evidence <id> --pattern ROOTCAUSE` (index) → `evidence <id> <run>` (drill in)
 - Watch live runs:              `matrix <id> …` → `watch --live` / `status <id> --live`
 - Cross-instance leaderboard:   `summary` → `report <id>`
+- Isolate one session's score:  `report <id> --since 9h` (all-time totals conflate old arms/configs)
 
 ## Workflow
 1. **See what's there** — `monobench list`, then `monobench show <id>` (the task; never `--spoil` into a solver).
