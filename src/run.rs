@@ -1189,6 +1189,7 @@ pub fn run(
                 }
             };
             let prompt = format!("{sys}\n\n{}\n# YOUR TASK\n{q}", "═".repeat(80));
+            let git_deny = install_git_deny_wrapper(&runid);
             let mut cmd = Command::new("claude");
             cmd.current_dir(&clone).arg("-p").arg(&prompt).args([
                 "--output-format",
@@ -1215,6 +1216,11 @@ pub fn run(
             .args(["--disallowedTools", "Bash(git:*)"]); // anti-contamination: no reading the fix from git history
             for e in STRIP_ENV {
                 cmd.env_remove(e);
+            }
+            // anti-contamination: PATH-shadow `git` (exit 126) so bare-git invocations the claude
+            // --disallowedTools "Bash(git:*)" matcher misses (e.g. `cd x && git log`) also fail.
+            if let Some(dir) = &git_deny {
+                prepend_path(&mut cmd, dir);
             }
             cmd.stdout(jsonl_file)
                 .stderr(File::create(out.join(format!("{runid}.err"))).unwrap());
@@ -1499,9 +1505,10 @@ pub(crate) fn agy_settings_model() -> Option<String> {
         .map(|s| s.to_string())
 }
 
-/// Compare model identifiers loosely: lowercased, alphanumerics only. So agy's display name
-/// "Gemini 3.5 Flash (Medium)" and the label "gemini-3.5-flash-medium" both reduce to
-/// "gemini35flashmedium" and match — covering the model AND the reasoning suffix together.
+/// Compare model identifiers loosely: lowercased, alphanumerics only. So agy's display names
+/// "Gemini 3.5 Flash (Medium)" / "Gemini 3.5 Flash (Low)" and the labels
+/// "gemini-3.5-flash-medium" / "gemini-3.5-flash-low" match while still covering the model and
+/// reasoning suffix together.
 pub(crate) fn agy_model_norm(s: &str) -> String {
     s.chars()
         .filter(|c| c.is_ascii_alphanumeric())
@@ -1822,5 +1829,21 @@ mod tests {
             Some("51ccc7c7-3534-4386-aee1-e47b64cd2666")
         );
         let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn agy_model_norm_matches_flash_low_and_medium_display_labels() {
+        assert_eq!(
+            agy_model_norm("Gemini 3.5 Flash (Low)"),
+            agy_model_norm("gemini-3.5-flash-low")
+        );
+        assert_eq!(
+            agy_model_norm("Gemini 3.5 Flash (Medium)"),
+            agy_model_norm("gemini-3.5-flash-medium")
+        );
+        assert_ne!(
+            agy_model_norm("Gemini 3.5 Flash (Low)"),
+            agy_model_norm("gemini-3.5-flash-medium")
+        );
     }
 }

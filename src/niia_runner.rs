@@ -261,7 +261,10 @@ fn agy_print_command(
 }
 
 fn agy_prompt_file(out_prefix: &Path) -> PathBuf {
-    std::env::temp_dir().join(format!("monobench-niia-agy-prompt-{}.txt", slug(out_prefix)))
+    std::env::temp_dir().join(format!(
+        "monobench-niia-agy-prompt-{}.txt",
+        slug(out_prefix)
+    ))
 }
 
 // Filesystem-safe slug from a run's out_prefix file name (the runid). Shared by the capture
@@ -384,33 +387,28 @@ fn parse_agy_observed_model(log_path: &Path) -> Option<String> {
     None
 }
 
-// Extract agy's answer from its structured transcript (the per-CLI "via-system" source). The
-// agent's output is a stream of `PLANNER_RESPONSE` events; concatenating their `content` in order
-// reproduces the same narration+analysis the direct runner captures from agy's stdout. None ⇒ no
-// transcript yet / no response, so the caller falls back to a terminal scrape.
-fn agy_answer_from_transcript(path: &Path) -> Option<String> {
-    let text = std::fs::read_to_string(path).ok()?;
-    let mut parts = Vec::new();
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let Ok(o) = serde_json::from_str::<Value>(line) else {
-            continue;
-        };
-        if o.get("type").and_then(Value::as_str) == Some("PLANNER_RESPONSE") {
-            if let Some(c) = o.get("content").and_then(Value::as_str) {
-                if !c.trim().is_empty() {
-                    parts.push(c.to_string());
-                }
-            }
-        }
+// agy's answer lives in its structured transcript, not the PTY screen (agy --print's text-drip can
+// stall and never flush to stdout — see research/NIIA-GETANSWER-INTERACTIVE-CAPTURE). The per-CLI
+// parsing lives in niia's `get-answer-system` command (sibling to `get-answer`), not inline here —
+// so it is reusable beyond monobench. We just call it. None ⇒ command absent (old niia) / no
+// answer, and the caller falls back to a terminal scrape.
+fn agy_answer_via_niia(transcript: &Path) -> Option<String> {
+    if !transcript.is_file() {
+        return None;
     }
-    if parts.is_empty() {
+    let out = Command::new(niia())
+        .args(["get-answer-system", "--cli", "agy", "--transcript"])
+        .arg(transcript)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).into_owned();
+    if s.trim().is_empty() {
         None
     } else {
-        Some(parts.join("\n\n"))
+        Some(s)
     }
 }
 
@@ -594,8 +592,8 @@ pub fn run(
                 let _ = std::fs::copy(src, &transcript);
             }
         }
-        let (answer, answer_source) = match agy_answer_from_transcript(&transcript) {
-            Some(a) => (a, "transcript"),
+        let (answer, answer_source) = match agy_answer_via_niia(&transcript) {
+            Some(a) => (a, "niia-get-answer-system"),
             None => (
                 run_text(&["get-answer", "--session", &session, &capture_marker])
                     .unwrap_or_default(),
@@ -722,7 +720,14 @@ mod tests {
         std::env::remove_var("MONOBENCH_AGY_TIMEOUT");
         let p = Path::new("/tmp/monogram-agy-gemini-3.5-r1-t123");
         let prompt_file = Path::new("/tmp/prompt-file.txt");
-        let cmd = agy_print_command(prompt_file, p, Path::new("/tmp/clone"), None, "gemini-3.5", "medium");
+        let cmd = agy_print_command(
+            prompt_file,
+            p,
+            Path::new("/tmp/clone"),
+            None,
+            "gemini-3.5",
+            "medium",
+        );
         assert!(cmd.contains("--dangerously-skip-permissions"));
         assert!(cmd.contains("--add-dir /tmp/clone"));
         assert!(cmd.contains("--log-file /tmp/monogram-agy-gemini-3.5-r1-t123.agy.log"));
@@ -760,27 +765,5 @@ mod tests {
         assert_eq!(parse_go_duration("1h"), Some(Duration::from_secs(3600)));
         assert_eq!(parse_go_duration("120"), Some(Duration::from_secs(120)));
         assert_eq!(parse_go_duration("bogus"), None);
-    }
-
-    #[test]
-    fn extracts_agy_answer_from_transcript() {
-        let p = std::env::temp_dir().join(format!("mb-agy-tx-{}.jsonl", std::process::id()));
-        std::fs::write(
-            &p,
-            "{\"type\":\"USER_INPUT\",\"content\":\"task\"}\n\
-             {\"type\":\"RUN_COMMAND\",\"content\":\"ls -la\"}\n\
-             {\"type\":\"PLANNER_RESPONSE\",\"content\":\"First I will inspect the code.\"}\n\
-             this-line-is-not-json\n\
-             {\"type\":\"PLANNER_RESPONSE\",\"content\":\"### Root cause: smb2_session_logoff\"}\n",
-        )
-        .unwrap();
-        let a = agy_answer_from_transcript(&p).expect("should extract planner responses");
-        // Concatenates PLANNER_RESPONSE content in order; ignores tool steps and non-json lines.
-        assert!(a.contains("First I will inspect the code."));
-        assert!(a.contains("smb2_session_logoff"));
-        assert!(!a.contains("ls -la"));
-        std::fs::remove_file(&p).ok();
-        // Missing/empty transcript ⇒ None (caller falls back to screen scrape).
-        assert!(agy_answer_from_transcript(Path::new("/no/such/transcript.jsonl")).is_none());
     }
 }
