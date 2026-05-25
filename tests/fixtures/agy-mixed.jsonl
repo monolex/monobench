@@ -1,0 +1,12 @@
+{"type":"PLANNER_RESPONSE","tool_calls":[{"name":"list_permissions","args":{"toolSummary":"List permissions"}}]}
+{"type":"GENERIC","status":"DONE","content":"Your current permission grants:\n- command(*): allowed\n- write_file(config): denied"}
+{"type":"PLANNER_RESPONSE","tool_calls":[{"name":"run_command","args":{"CommandLine":"monogram stats"}}]}
+{"type":"RUN_COMMAND","status":"DONE","content":"Created At: 2026-05-24T00:00:00Z\nCompleted At: 2026-05-24T00:00:01Z\nThe command completed successfully.\nOutput:\nFiles: 10"}
+{"type":"PLANNER_RESPONSE","tool_calls":[{"name":"grep_search","args":{"Query":"needle","SearchPath":"/repo","IsRegex":false}}]}
+{"type":"GREP_SEARCH","status":"DONE","content":"Created At: 2026-05-24T00:00:02Z\nCompleted At: 2026-05-24T00:00:03Z\n{\"File\":\"/repo/src/lib.rs\",\"LineNumber\":42,\"LineContent\":\"needle\"}"}
+{"type":"PLANNER_RESPONSE","tool_calls":[{"name":"view_file","args":{"AbsolutePath":"/repo/src/lib.rs","StartLine":10,"EndLine":20}}]}
+{"type":"VIEW_FILE","status":"DONE","content":"Created At: 2026-05-24T00:00:04Z\nCompleted At: 2026-05-24T00:00:05Z\nFile Path: `file:///repo/src/lib.rs`\nShowing lines 10 to 20"}
+{"type":"PLANNER_RESPONSE","tool_calls":[{"name":"list_dir","args":{"DirectoryPath":"/repo/missing"}}]}
+{"type":"LIST_DIRECTORY","status":"ERROR","content":"Encountered error in step execution: directory /repo/missing does not exist"}
+{"type":"PLANNER_RESPONSE","tool_calls":[{"name":"run_command","args":{"CommandLine":"git grep needle"}}]}
+{"type":"RUN_COMMAND","status":"DONE","content":"The command failed with exit code: 126\nmonobench: git is disabled during solver runs (anti-contamination)"}
