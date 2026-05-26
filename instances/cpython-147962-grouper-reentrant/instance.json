@@ -8,34 +8,48 @@
     "c",
     "python"
   ],
-  "category": "re-entrant UAF (itertools._grouper)",
-  "crash_site": "TODO — where the crash is OBSERVED (must be a DIFFERENT fn than the cause)",
+  "category": "re-entrant use-after-free (itertools _grouper compares borrowed keys across a user __eq__)",
+  "crash_site": "SIGSEGV / use-after-free while iterating an itertools.groupby grouper whose keys have a custom __eq__: the C code compares igo->tgtkey against gbo->currkey, the user __eq__ re-enters the grouper/groupby and mutates currkey (dropping its last ref), and the comparison or the next step then dereferences the freed key. Crash in the grouper step, driven by re-entrancy in the comparison.",
   "buggy_files_to_verify": [
-    "Misc/NEWS.d/next/Library/2026-04-01-11-05-36.gh-issue-146613.GzjUFK.rst",
     "Modules/itertoolsmodule.c"
   ],
   "ground_truth": {
-    "root_cause_file": "Misc/NEWS.d/next/Library/2026-04-01-11-05-36.gh-issue-146613.GzjUFK.rst",
-    "root_cause_fn": "TODO",
-    "decoy_fn": "TODO — adjacent plausible-but-wrong fn (often the crash site itself)",
+    "root_cause_file": "Modules/itertoolsmodule.c",
+    "root_cause_fn": "_grouper_next",
+    "decoy_fn": "the user-defined __eq__ (the TRIGGER, not the bug); the parent groupby_next; PyObject_RichCompareBool (correct). The bug is _grouper_next comparing BORROWED tgtkey/currkey without holding refs across the compare.",
     "fix_pr": 147962,
     "fix_commit": "fc7a188fe70a",
-    "fix_summary": "TODO — see ground_truth.md"
+    "fix_summary": "_grouper_next() passed igo->tgtkey and gbo->currkey (borrowed) straight into PyObject_RichCompareBool. A user __eq__ can re-enter the iterator and mutate gbo->currkey during the compare, freeing the object the C code still points at -> use-after-free. Fix: take strong snapshots (tgtkey = Py_NewRef(igo->tgtkey); currkey = Py_NewRef(gbo->currkey)) around the comparison and Py_DECREF them after."
   },
   "grading": {
     "full_must_name": [
-      "TODO"
+      "_grouper_next"
     ],
     "mechanism_keywords": [
-      "TODO"
+      "reentrant",
+      "re-enter",
+      "__eq__",
+      "RichCompareBool",
+      "borrowed",
+      "Py_NewRef",
+      "snapshot",
+      "strong reference",
+      "use-after-free",
+      "UAF",
+      "currkey",
+      "tgtkey",
+      "mutate"
     ],
     "decoy_markers": [
-      "TODO"
+      "user __eq__",
+      "groupby_next",
+      "PyObject_RichCompareBool",
+      "the comparison callback"
     ]
   },
   "admission": {
-    "note": "PROVISIONAL scaffold. Author TODO before running: hide the API in symptom.md, verify crash-fn≠cause-fn, fill grading keys, run the thin arm.",
+    "note": "monogram+haiku vs baseline+haiku discrimination. HARD: trigger is a user __eq__, but the bug is _grouper_next comparing borrowed key pointers across that re-entrant call. Live decoy = blaming __eq__ or the compare. Authored from PR #147962 fix diff (Py_NewRef snapshots of tgtkey/currkey). NOTE: scaffold root_cause_file was the Misc/NEWS.d changelog .rst — corrected to Modules/itertoolsmodule.c.",
     "baseline_full_hit_rate_max": 0.5
   },
-  "provenance": "https://github.com/python/cpython/pull/147962 — gh-146613: Fix re-entrant use-after-free in itertools._grouper (merged 2026-04-02); base c1a4112c225e = merge first-parent."
+  "provenance": "https://github.com/python/cpython/pull/147962 — gh-146613 re-entrant UAF in itertools._grouper (merged 2026-04-02); fix commit fc7a188fe70a; base c1a4112c225e. Root cause + fix from the commit diff (_grouper_next Py_NewRef snapshots)."
 }

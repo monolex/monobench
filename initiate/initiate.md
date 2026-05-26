@@ -4,13 +4,18 @@ Does giving an AI agent a code-intelligence tool (monogram, codegraph, …) actu
 ROOT CAUSE of a real bug — vs a baseline told to dig just as hard — when the symptom and the cause
 are linked by STRUCTURE (call graph / ownership), not TEXT?  "SWE-bench, for tool comparison."
 
+Monobench is public-shaped, but its first customer is the Monolex recursive tool-development loop:
+preserve evidence, compare success/failure rails, propose generalized monogram/NIIA/monokist
+improvements, and keep answer-key literals out of solver prompts. Canonical flow:
+research/indexes/loop-flow.md.
+
 USAGE
   monobench <command> [args]
 
 COMMANDS
   list                       List benchmark instances (id + title).
   tools                      List tool adapters you can run as arms (baseline/monogram/monogram-mcp/
-                             monogram-thin/codegraph/yours).
+                             codegraph/yours; legacy controls may also appear).
   status <id> [--detail]     Runs in chronological order (oldest→newest), each with its UTC start time
                              ("MM-DD HH:MMZ"; "—" = legacy run with no embedded start time), state,
                              active phase, workers. --detail adds file size/age.
@@ -34,7 +39,7 @@ COMMANDS
       [--tools a,b]          Default: monogram. Use before `matrix --prepared`.
   matrix <id>                Run a tool × repeat grid for exactly ONE CLI+model command.
       [--tools a,b]          Tool arms to compare, e.g. baseline,monogram.
-      [--cli c]              CLI environment: claude | codex | agy | gemini.
+      [--cli c]              CLI environment: claude | codex | agy | gemini | grok.
       [--model x]            Full model label for this command. Repeat the matrix command for the next model.
                              (agy: must match ~/.gemini/antigravity-cli/settings.json model, else refused.)
       [--via direct|niia]    direct by default; niia drives the CLI through the headless terminal.
@@ -77,6 +82,10 @@ COMMANDS
                              --since 9h|30m|2d windows to runs STARTED in the period (label -t<ms>,
                              mtime fallback for legacy labels) — isolate one session from all-time totals.
   summary [--since DUR]      Cross-INSTANCE leaderboard: FULL hit-rate + median wall time per arm.
+  column <arm> [--since DUR] ONE arm's verified grade breakdown across every instance: per-instance +
+                             total FULL/MISS/DECOY/NAME_ONLY/INVALID counts, root-cause hit-rate, and
+                             review coverage (judged vs unreviewed). The judged detail behind `summary`;
+                             <arm> is a full arm name e.g. baseline-codex-gpt-5.4-mini-low.
   adoption <id>              Per-run tool-call + monogram-subcommand breakdown (calls/share/first-use/
                              fails/mix) — for CLI and MCP delivery. "Did the agent actually use it?"
   monogram-audit <id>        Diagnose monogram command/result failure patterns in solver telemetry
@@ -93,10 +102,12 @@ ARMS = TOOL ADAPTERS (pluggable — define your own)
   Shipped adapters:
     baseline      index_steps:[] deliver:none  — control (builtins only). The admission gate.
     monogram      monogram index .        cli  — CLI; skill leads with structural cmds, "run first".
-    monogram-thin monogram index .        cli  — thinner lead prompt; useful for prompt-load controls.
     monogram-mcp  monogram index .        mcp  — SAME index as forced MCP tools (monogram serve).
-                                                 Lifts adoption on weak models (CLI suggestion → tools).
+                                                 Use only when delivery/interaction is the suspected variable.
     codegraph     codegraph init+index    mcp  — first-class MCP tools; FORFEITs if it can't index (Zig OOM).
+  Legacy/diagnostic controls:
+    monogram-thin monogram index .        cli  — prompt-load control only. Do not use as the default
+                                                 recursive-loop axis; start with real monogram.
   Add a tool:  cp -r harness/tools/_TEMPLATE harness/tools/<name> && edit tool.json (+ skill.md)
   EVERY arm gets the same depth directive (prompts/depth.md); only the tool differs.
 
@@ -109,6 +120,11 @@ CLI / MODEL AXES
                  reflects the real match (effort stays label-only). The repo is handed to agy via
                  --add-dir (it ignores cwd), and reads are jailed with sandbox-exec on macOS so agy
                  cannot read the gated ground truth. Cost/tokens unavailable.
+  --cli grok     direct `grok -p <prompt> --cwd <clone> --model grok-build --output-format json`
+                 (single model grok-build, OAuth/subscription). No per-turn token split or cost →
+                 tokens/cost_usd null, *_available false; meter carries honest session metrics from
+                 ~/.grok/sessions/<cwd>/<sessionId>/signals.json (turns, tool_calls, context_tokens_used,
+                 duration, ttft), found via the sessionId in grok's JSON envelope. effort is label-only.
   --via niia     drive the selected CLI through the niia headless terminal (write/wait-idle/get-answer);
                  picks a live ATTACHED session (detached zombies are skipped). For agy it runs
                  `agy --print` with --dangerously-skip-permissions + --add-dir + the sandbox-exec
@@ -124,7 +140,10 @@ CLI / MODEL AXES
 METRIC
   root-cause Hit-rate (FULL) · final-review status · tokens-per-correct-root-cause · tool-call
   count · tool-ADOPTION (a tool the agent never called was not tested) · FORFEIT.
-  Automatic grades are keyword checks. Final benchmark truth should use checked `.review.json`.
+  Two-stage grading: `grade` is deterministic and automatic; `judge` builds an answer-key-aware
+  final-grader prompt for the orchestrating LLM or a human; `review` records the checked result in
+  `.review.json`. `judge` itself does not call a model, so the solver process stays separate from
+  the reviewer that may see ground truth. Final benchmark truth should use checked `.review.json`.
 
 FAIRNESS (enforced — see SPEC.md)
   1. every arm gets the SAME depth directive; only the tool differs.
@@ -140,17 +159,19 @@ FAIRNESS (enforced — see SPEC.md)
 
 FLOW  (every command ends with [NEXT]; no command dead-ends — monogram-style discovery graph)
   list ──→ show ──→ run ──→ grade ──→ judge / review
-    └──→ status ──→ report ──→ summary
+    └──→ status ──→ report ──→ summary ──→ column <arm>
            └──→ watch --live
   tools ──→ run / matrix
   {trace · adoption · monogram-audit} ──→ evidence ──→ export / integrity / trace
 
   compare tool vs baseline:     run <id> baseline → run <id> monogram → report <id>
   investigate a MISS:           report <id> → evidence <id> <run> --pattern ROOTCAUSE → trace <id> <run> → export <id> <run>
+  diagnose monogram loop:       monogram-audit <id> → evidence <id> --pattern 'region_first_next|score-debug|ROOTCAUSE' → classify path-not-closed vs closed-but-uncalibrated
   validate before counting:     integrity <id> → inspect <id> <run> → rerun if contaminated
   scan conclusions (all runs):  evidence <id> --pattern ROOTCAUSE → evidence <id> <run>
   watch live runs:              matrix <id> … → watch --live  /  status <id> --live
-  cross-instance leaderboard:   summary → report <id>
+  cross-instance leaderboard:   summary → column <arm> → report <id>
+  verify one arm fully judged:  column <arm>   (per-instance FULL/MISS/DECOY/INVALID + judged/unreviewed)
   isolate one session's score:  report <id> --since 9h   (all-time totals conflate old arms/configs)
 
 EXAMPLES
@@ -165,6 +186,7 @@ EXAMPLES
   monobench matrix bun-1.3.10-toThreadSafe --tools baseline,monogram --cli claude --model haiku --runs 3 --jobs 2
   monobench matrix bun-1.3.10-toThreadSafe --tools baseline,monogram --cli codex --model gpt-5.3-codex-spark --effort high --runs 2 --prepared --tag lockfix-spark --note "lock+grep-probe 이후 재검증"
   monobench matrix bun-1.3.10-toThreadSafe --tools baseline,monogram --cli codex --model gpt-5.4-mini --effort low --runs 2 --jobs 2
+  monobench matrix ksmbd-37899 --tools baseline,monogram --cli agy --model gemini-3.5-flash-low --runs 2 --jobs 1 --prepared --tag flashlow-ksmbd
   monobench matrix bun-1.3.10-toThreadSafe --tools baseline,monogram --cli agy --model gemini-3.5-flash-medium --runs 2 --jobs 2   # agy model = ~/.gemini/antigravity-cli/settings.json (must match --model)
   monobench report bun-1.3.10-toThreadSafe
   monobench judge  bun-1.3.10-toThreadSafe monogram-codex-gpt-5.4-mini-low-r1-t1779581234567 --model gpt-5.5 --write
@@ -203,7 +225,7 @@ RUN ANALYSIS MEMORY
 ENV (axes: tool × CLI × model × effort)
   --cli / MONOBENCH_CLI_NAME=claude|codex|agy|gemini
   --via / MONOBENCH_VIA=direct|niia
-  --model / MONOBENCH_MODEL=opus|sonnet|haiku|claude-opus-4.1|gpt-5.4-mini|...
+  --model / MONOBENCH_MODEL=opus|sonnet|haiku|claude-opus-4.1|gpt-5.4-mini|gemini-3.5-flash-low|...
   MONOBENCH_EFFORT=low|medium|high|xhigh|max   MONOBENCH_CAP=6 (USD/run)
   MONOBENCH_RUNNER=claude-p|codex|agy|niia      legacy compatibility only
   MONOBENCH_CLI='codex -m gpt-5.4-mini'         niia custom spawn override

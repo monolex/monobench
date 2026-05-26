@@ -8,33 +8,55 @@
     "c++",
     "js"
   ],
-  "category": "N-API handle-scope race",
-  "crash_site": "TODO — where the crash is OBSERVED (must be a DIFFERENT fn than the cause)",
+  "category": "N-API handle-scope data race (unsynchronized m_storage mutation across threads)",
+  "crash_site": "Intermittent SIGSEGV / heap corruption observed during GC sweep or value finalization while a native addon is under load: a read of a stale slot or a WTF::Vector whose backing store was reallocated underneath the reader. The crash surfaces in correct GC/finalization code that READS m_storage, NOT in the unsynchronized append() that actually caused it.",
   "buggy_files_to_verify": [
     "src/bun.js/bindings/napi_handle_scope.cpp"
   ],
   "ground_truth": {
     "root_cause_file": "src/bun.js/bindings/napi_handle_scope.cpp",
-    "root_cause_fn": "TODO",
-    "decoy_fn": "TODO — adjacent plausible-but-wrong fn (often the crash site itself)",
+    "root_cause_fn": "NapiHandleScopeImpl::append",
+    "decoy_fn": "the GC-sweep / finalizer code that READS m_storage (where corruption surfaces but which is correct); NapiHandleScope open/close lifecycle; WTF::Vector growth itself (correct). NapiHandleScopeImpl::reserveSlot is a CO-CAUSE, not a decoy.",
     "fix_pr": 20093,
     "fix_commit": "4534f6e635d2",
-    "fix_summary": "TODO — see ground_truth.md"
+    "fix_summary": "NapiHandleScopeImpl::append and NapiHandleScopeImpl::reserveSlot mutate m_storage (a WTF::Vector) with no lock, but they run from multiple threads (e.g. GC sweeping / finalizers), so a concurrent append triggers a Vector reallocation that races another thread's access -> use-after-free / corruption. Fix: take `WTF::Locker locker { cellLock() }` before the m_storage mutation in both append() and reserveSlot()."
   },
   "grading": {
     "full_must_name": [
-      "TODO"
+      "append",
+      "reserveSlot",
+      "NapiHandleScopeImpl::append"
     ],
     "mechanism_keywords": [
-      "TODO"
+      "race",
+      "data race",
+      "concurrent",
+      "multiple threads",
+      "m_storage",
+      "without lock",
+      "unsynchronized",
+      "WTF::Locker",
+      "cellLock",
+      "mutex",
+      "GC",
+      "sweep",
+      "finalize",
+      "Vector",
+      "reallocation",
+      "thread"
     ],
     "decoy_markers": [
-      "TODO"
+      "napi_open_handle_scope",
+      "NapiHandleScope::open",
+      "GC sweep read site",
+      "finalizer crash site",
+      "Vector growth",
+      "16146"
     ]
   },
   "admission": {
-    "note": "PROVISIONAL scaffold. Author TODO before running: hide the API in symptom.md, verify crash-fn≠cause-fn, fill grading keys, run the thin arm.",
+    "note": "monogram+haiku vs baseline+haiku discrimination. HARD: crash is intermittent GC/finalization corruption with no text bridge to the unsynchronized m_storage append; the live decoy is the correct read/crash site. Authored from PR #20093 fix diff: append() and reserveSlot() gained WTF::Locker{cellLock()} around the m_storage mutation. NOTE: symptom is inferred from the race mechanism (no verbatim upstream crash trace was available).",
     "baseline_full_hit_rate_max": 0.5
   },
-  "provenance": "https://github.com/oven-sh/bun/pull/20093 — fix `NapiHandleScopeImpl` race condition (merged 2025-05-31); base c62a7a77a3fe = merge first-parent."
+  "provenance": "https://github.com/oven-sh/bun/pull/20093 — fix `NapiHandleScopeImpl` race condition (merged 2025-05-31); fix commit 4534f6e635d2; base c62a7a77a3fe = merge first-parent. Fixes #16146. Root cause + fix extracted from the commit diff (append/reserveSlot gained WTF::Locker{cellLock()})."
 }

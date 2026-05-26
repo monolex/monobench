@@ -8,34 +8,53 @@
     "c",
     "python"
   ],
-  "category": "re-entrant-mutation UAF (json encoder)",
-  "crash_site": "TODO — where the crash is OBSERVED (must be a DIFFERENT fn than the cause)",
+  "category": "re-entrant-mutation use-after-free (C json encoder holds borrowed item refs across a user callback)",
+  "crash_site": "SIGSEGV / use-after-free during json.dumps() of a container that contains an object whose encoding runs Python (a `default=` handler, a custom `__str__`/`__repr__`, or a dict whose `items()`/keys run code): a LATER iteration of the C encoder dereferences a container item that the re-entrant Python code already freed (e.g. list.clear()). The crash is in the encoder's iteration loop, after the borrowed pointer went stale.",
   "buggy_files_to_verify": [
-    "Misc/NEWS.d/next/Library/2025-12-17-04-10-35.gh-issue-142831.ee3t4L.rst",
     "Modules/_json.c"
   ],
   "ground_truth": {
-    "root_cause_file": "Misc/NEWS.d/next/Library/2025-12-17-04-10-35.gh-issue-142831.ee3t4L.rst",
-    "root_cause_fn": "TODO",
-    "decoy_fn": "TODO — adjacent plausible-but-wrong fn (often the crash site itself)",
+    "root_cause_file": "Modules/_json.c",
+    "root_cause_fn": "_encoder_iterate_mapping_lock_held",
+    "decoy_fn": "the re-entrant user code itself (the `default` handler / custom `__str__` / list.clear) — that is the TRIGGER, not the bug; the bug is the C encoder iterating over BORROWED references. Co-cause functions: _encoder_iterate_dict_lock_held, _encoder_iterate_fast_seq_lock_held.",
     "fix_pr": 142851,
     "fix_commit": "235fa7244a04",
-    "fix_summary": "TODO — see ground_truth.md"
+    "fix_summary": "The _json C encoder iterated container items using BORROWED references. While encoding, user Python (a `default` callback, a custom string conversion, or dict iteration) can re-enter and mutate/clear the container, invalidating those borrowed pointers; a subsequent iteration then dereferences freed memory. The strong-reference safeguard existed but was guarded by `#ifdef Py_GIL_DISABLED`. Fix: remove the conditional so the encoder always wraps each item in Py_INCREF/Py_DECREF (strong refs) during iteration in _encoder_iterate_mapping_lock_held / _encoder_iterate_dict_lock_held / _encoder_iterate_fast_seq_lock_held."
   },
   "grading": {
     "full_must_name": [
-      "TODO"
+      "_encoder_iterate_mapping_lock_held",
+      "_encoder_iterate_dict_lock_held",
+      "_encoder_iterate_fast_seq_lock_held"
     ],
     "mechanism_keywords": [
-      "TODO"
+      "reentrant",
+      "re-enter",
+      "borrowed reference",
+      "Py_INCREF",
+      "Py_DECREF",
+      "strong reference",
+      "use-after-free",
+      "UAF",
+      "mutate",
+      "clear",
+      "default",
+      "callback",
+      "iteration",
+      "container",
+      "invalidate"
     ],
     "decoy_markers": [
-      "TODO"
+      "default handler",
+      "list.clear",
+      "user __str__",
+      "the mutating callback",
+      "Py_GIL_DISABLED"
     ]
   },
   "admission": {
-    "note": "PROVISIONAL scaffold. Author TODO before running: hide the API in symptom.md, verify crash-fn≠cause-fn, fill grading keys, run the thin arm.",
+    "note": "monogram+haiku vs baseline+haiku discrimination. HARD: the crash trigger is user Python mutating a container mid-encode, but the BUG is the C encoder holding borrowed refs across that re-entrancy. Live decoy = blaming the user callback. Authored from PR #142851 fix diff (drop #ifdef Py_GIL_DISABLED so Py_INCREF/DECREF always wrap iterated items). NOTE: scaffold root_cause_file was the Misc/NEWS.d changelog .rst — corrected to Modules/_json.c.",
     "baseline_full_hit_rate_max": 0.5
   },
-  "provenance": "https://github.com/python/cpython/pull/142851 — gh-142831: Fix UAF in `_json` module (merged 2026-04-12); base d761f539bdae = merge first-parent."
+  "provenance": "https://github.com/python/cpython/pull/142851 — gh-142831 Fix UAF in `_json` (merged 2026-04-12); fix commit 235fa7244a04; base d761f539bdae. Root cause + fix extracted from the commit diff (_encoder_iterate_*_lock_held borrowed->strong refs)."
 }

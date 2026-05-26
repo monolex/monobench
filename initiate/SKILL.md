@@ -20,9 +20,9 @@ monobench
 
 ## When to Use
 - Comparing whether a code-intelligence tool earns its keep (root-cause Hit-rate, tokens-per-correct).
-- Comparing CLI environments and models on real bugs (`--cli agy --model gemini-3.5-flash-medium` is
-  distinct from `--cli claude --model <model>`; agy reads its model from
-  ~/.gemini/antigravity-cli/settings.json and the run is refused unless it matches `--model`).
+- Comparing CLI environments and models on real bugs (`--cli agy --model gemini-3.5-flash-low` or
+  `gemini-3.5-flash-medium` is distinct from `--cli claude --model <model>`; agy reads its model
+  from ~/.gemini/antigravity-cli/settings.json and the run is refused unless it matches `--model`).
 - Adding a new real bug as a reproducible benchmark instance.
 - Checking that a candidate problem is even *fair* (the admission gate rejects grep-solvable toys).
 
@@ -32,7 +32,7 @@ Every command ends with a `[NEXT]` block, so the CLI is self-guiding and no comm
 
 ```
 list ──→ show ──→ run ──→ grade ──→ judge / review
-  └──→ status ──→ report ──→ summary
+  └──→ status ──→ report ──→ summary ──→ column <arm>
          └──→ watch --live
 tools ──→ run / matrix
 {trace · adoption · monogram-audit} ──→ evidence ──→ export / integrity / trace
@@ -41,10 +41,12 @@ tools ──→ run / matrix
 Example flows (the detailed way to use it):
 - Compare a tool vs baseline:   `run <id> baseline 1` → `run <id> monogram 1` → `report <id>`
 - Investigate a MISS:           `report <id>` → `evidence <id> <run> --pattern ROOTCAUSE` → `trace <id> <run>` → `export <id> <run>`
+- Diagnose monogram loop:       `monogram-audit <id>` → `evidence <id> --pattern 'region_first_next|score-debug|ROOTCAUSE'` → classify path-not-closed vs closed-but-uncalibrated
 - Validate before counting:     `integrity <id>` → `inspect <id> <run>` → rerun if contaminated
 - Scan conclusions across runs: `evidence <id> --pattern ROOTCAUSE` (index) → `evidence <id> <run>` (drill in)
 - Watch live runs:              `matrix <id> …` → `watch --live` / `status <id> --live`
-- Cross-instance leaderboard:   `summary` → `report <id>`
+- Cross-instance leaderboard:   `summary` → `column <arm>` → `report <id>`
+- Verify one arm fully judged:  `column <arm>` (per-instance FULL/MISS/DECOY/INVALID + judged vs unreviewed)
 - Isolate one session's score:  `report <id> --since 9h` (all-time totals conflate old arms/configs)
 
 ## Workflow
@@ -65,8 +67,14 @@ Example flows (the detailed way to use it):
    `rg`/`tail` for focused single-run evidence, `monobench trace` for a compact ordered tool-call
    timeline, and `monobench export` when the full transcript should become reusable markdown evidence.
    After export, run `monomento index . --project`, then search/peek the run later with monomento.
+   For Monolex tool development, turn repeated patterns into maker proposals rather than solver
+   hints; the canonical internal flow is `research/indexes/loop-flow.md`.
 6. **Report** — `monobench report <id>` → per-arm FULL Hit-rate · median $ · median tokens · adoption.
-7. **Add a bug** — `monobench add <id>`, then fill `instance.json` (repo, tag, ground_truth, grading),
+7. **Check final grades** — automatic grades are stage 1. For final benchmark truth, use
+   `monobench judge <id> <run> --model <judge-model> --write`, have the orchestrating LLM or a human
+   judge that prompt, then record it with `monobench review`. `judge` does not call a model; it keeps
+   the solver subprocess separate from the reviewer that may see the answer key.
+8. **Add a bug** — `monobench add <id>`, then fill `instance.json` (repo, tag, ground_truth, grading),
    `symptom.md` (no spoilers), `ground_truth.md` (gated). Confirm it meets C1–C6 in SPEC.md.
 
 ## Integrity (don't break the benchmark)

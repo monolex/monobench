@@ -8,34 +8,50 @@
     "c++",
     "js"
   ],
-  "category": "premature-GC UAF (sqlite StatementSync)",
-  "crash_site": "TODO — where the crash is OBSERVED (must be a DIFFERENT fn than the cause)",
+  "category": "premature-GC use-after-free (statement holds a raw pointer to a collectible database)",
+  "crash_site": "SIGSEGV / use-after-free in StatementSync::All() / Run() / Iterate() when they access db_ after the parent DatabaseSync was garbage-collected. Those methods are correct; they dereference a db_ pointer that was never kept alive.",
   "buggy_files_to_verify": [
     "src/node_sqlite.cc",
     "src/node_sqlite.h"
   ],
   "ground_truth": {
     "root_cause_file": "src/node_sqlite.cc",
-    "root_cause_fn": "TODO",
-    "decoy_fn": "TODO — adjacent plausible-but-wrong fn (often the crash site itself)",
+    "root_cause_fn": "StatementSync::StatementSync",
+    "decoy_fn": "the StatementSync methods where it crashes (All/Run/Iterate) — correct readers of db_; the DatabaseSync finalizer / sqlite3_finalize. The bug is the constructor storing a non-owning raw DatabaseSync*.",
     "fix_pr": 56840,
     "fix_commit": "cebf4c8a9f23",
-    "fix_summary": "TODO — see ground_truth.md"
+    "fix_summary": "StatementSync's constructor stored its parent as a raw DatabaseSync* (db_ = db) with no strong reference, so V8 could garbage-collect/finalize the DatabaseSync while a StatementSync still pointed at it -> dangling db_ -> UAF on the next statement operation. Fix: change the member to BaseObjectPtr<DatabaseSync> db_ (constructor takes BaseObjectPtr, db_(std::move(db))), so the statement keeps the database alive; all uses become db_.get()."
   },
   "grading": {
     "full_must_name": [
-      "TODO"
+      "StatementSync::StatementSync"
     ],
     "mechanism_keywords": [
-      "TODO"
+      "use-after-free",
+      "UAF",
+      "garbage collect",
+      "premature GC",
+      "raw pointer",
+      "BaseObjectPtr",
+      "strong reference",
+      "finalize",
+      "DatabaseSync",
+      "dangling",
+      "lifetime",
+      "keep alive"
     ],
     "decoy_markers": [
-      "TODO"
+      "All",
+      "Run",
+      "Iterate",
+      "the statement method crash site",
+      "DatabaseSync finalizer",
+      "sqlite3_finalize"
     ]
   },
   "admission": {
-    "note": "PROVISIONAL scaffold. Author TODO before running: hide the API in symptom.md, verify crash-fn≠cause-fn, fill grading keys, run the thin arm.",
+    "note": "monogram+haiku vs baseline+haiku discrimination. HARD: crash is in a statement method dereferencing db_, but the cause is the constructor holding a non-owning raw pointer to a GC-managed database. Live decoy = the crashing method. Authored from PR #56840 fix diff (raw DatabaseSync* -> BaseObjectPtr<DatabaseSync>).",
     "baseline_full_hit_rate_max": 0.5
   },
-  "provenance": "https://github.com/nodejs/node/pull/56840 — sqlite: fix use-after-free in StatementSync due to premature GC (merged 2025-02-05); base 316014d17273 = merge first-parent."
+  "provenance": "https://github.com/nodejs/node/pull/56840 — sqlite: fix UAF in StatementSync due to premature GC (merged 2025-02-05); fix commit cebf4c8a9f23; base 316014d17273. Root cause + fix from the commit diff (StatementSync ctor raw ptr -> BaseObjectPtr<DatabaseSync>)."
 }

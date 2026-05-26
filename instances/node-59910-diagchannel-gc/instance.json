@@ -5,36 +5,53 @@
   "tag": "c7b0dfbd7c56",
   "base_commit": "c7b0dfbd7c56",
   "languages": [
-    "c++",
     "js"
   ],
-  "category": "race with GC (diagnostics_channel)",
-  "crash_site": "TODO — where the crash is OBSERVED (must be a DIFFERENT fn than the cause)",
+  "category": "FinalizationRegistry race (a late finalizer deletes a freshly re-created entry)",
+  "crash_site": "Not a crash — a silent correctness bug: a diagnostics_channel subscription/entry is lost after GC, so published messages stop reaching subscribers (or a stale entry is observed). Surfaces as 'subscriber intermittently stops receiving events' after garbage collection, not a stack trace.",
   "buggy_files_to_verify": [
     "lib/diagnostics_channel.js"
   ],
   "ground_truth": {
     "root_cause_file": "lib/diagnostics_channel.js",
-    "root_cause_fn": "TODO",
-    "decoy_fn": "TODO — adjacent plausible-but-wrong fn (often the crash site itself)",
+    "root_cause_fn": "WeakRefMap",
+    "decoy_fn": "Channel / ActiveChannel publish/subscribe/unsubscribe (they look like where a subscriber is lost, but are correct); the WeakRef construction. The bug is the WeakRefMap FinalizationRegistry #finalizers callback deleting unconditionally.",
     "fix_pr": 59910,
     "fix_commit": "897932c4848a",
-    "fix_summary": "TODO — see ground_truth.md"
+    "fix_summary": "WeakRefMap's FinalizationRegistry callback (#finalizers) did this.delete(key) unconditionally. Finalizers run asynchronously after GC, so if a new WeakRef replaced the old one for the same key BEFORE the old ref's finalizer fired, the finalizer deleted the FRESH entry -> the channel/subscriber map silently loses a live entry (race between GC finalization and re-creation). Fix: the finalizer now deletes only if the entry is truly gone (`if (!this.has(key)) this.delete(key)`), plus a new has() override that checks `!!this.get(key)` (a live value) rather than SafeMap.has()."
   },
   "grading": {
     "full_must_name": [
-      "TODO"
+      "WeakRefMap",
+      "finalizers",
+      "#finalizers"
     ],
     "mechanism_keywords": [
-      "TODO"
+      "FinalizationRegistry",
+      "finalizer",
+      "WeakRef",
+      "garbage collect",
+      "race",
+      "asynchronous",
+      "delete",
+      "stale",
+      "replaced entry",
+      "has",
+      "get",
+      "lost subscription"
     ],
     "decoy_markers": [
-      "TODO"
+      "subscribe",
+      "unsubscribe",
+      "Channel",
+      "ActiveChannel",
+      "publish",
+      "the WeakRef"
     ]
   },
   "admission": {
-    "note": "PROVISIONAL scaffold. Author TODO before running: hide the API in symptom.md, verify crash-fn≠cause-fn, fill grading keys, run the thin arm.",
+    "note": "monogram+haiku vs baseline+haiku discrimination. HARD + no crash: a GC-timing race where a late finalizer removes a re-created map entry, silently dropping a diagnostics subscription. Live decoy = the subscribe/publish path. Authored from PR #59910 fix diff (WeakRefMap #finalizers guards on !has(key); new has() override).",
     "baseline_full_hit_rate_max": 0.5
   },
-  "provenance": "https://github.com/nodejs/node/pull/59910 — diagnostics_channel: fix race condition with diagnostics_channel and GC (merged 2025-09-19); base c7b0dfbd7c56 = merge first-parent."
+  "provenance": "https://github.com/nodejs/node/pull/59910 — diagnostics_channel: fix race with diagnostics_channel and GC (merged 2025-09-19); fix commit 897932c4848a; base c7b0dfbd7c56. Root cause + fix from the commit diff (WeakRefMap #finalizers guard + has() override)."
 }

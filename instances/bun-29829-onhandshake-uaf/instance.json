@@ -7,37 +7,55 @@
   "languages": [
     "zig"
   ],
-  "category": "callback-frees-client UAF (onHandshake; verify crash≠cause)",
-  "crash_site": "TODO — where the crash is OBSERVED (must be a DIFFERENT fn than the cause)",
+  "category": "callback-frees-client use-after-free (onHandshake continues after the fail path frees the client)",
+  "crash_site": "ASAN use-after-poison on a WRITE at src/http/HTTPContext.zig (~line 420) inside onHandshake itself: after the verification-failure branch already freed the client, onHandshake keeps writing client.flags / unregisterAbortTracker() / terminateSocket(). The free happened earlier in the same synchronous call path.",
   "buggy_files_to_verify": [
-    "src/boringssl.zig",
     "src/http/HTTPContext.zig",
+    "src/boringssl.zig",
     "src/http/ProxyTunnel.zig",
     "src/js/node/_http_client.ts",
     "src/js/node/_http_server.ts"
   ],
   "ground_truth": {
-    "root_cause_file": "src/boringssl.zig",
-    "root_cause_fn": "TODO",
-    "decoy_fn": "TODO — adjacent plausible-but-wrong fn (often the crash site itself)",
+    "root_cause_file": "src/http/HTTPContext.zig",
+    "root_cause_fn": "onHandshake",
+    "decoy_fn": "the free path that runs first — checkServerIdentity / closeAndFail / fail / src/http.zig::onAsyncHTTPCallback -> deinit. Those are CORRECT (they are supposed to free on verification failure). The bug is onHandshake continuing to touch the client AFTER that path already freed it.",
     "fix_pr": 29829,
     "fix_commit": "fad191de5856",
-    "fix_summary": "TODO — see ground_truth.md"
+    "fix_summary": "In HTTPContext.zig::onHandshake, when checkServerIdentity() returns false it synchronously runs closeAndFail()->fail()->onAsyncHTTPCallback()->threadlocal_http.deinit(), destroying the AsyncHTTP that embeds the HTTPClient. onHandshake then kept executing on the freed client — setting client.flags.did_have_handshaking_error, calling unregisterAbortTracker(), and terminateSocket() — a use-after-free. Fix: return immediately on the checkServerIdentity()==false branch, dropping those three post-free operations."
   },
   "grading": {
     "full_must_name": [
-      "TODO"
+      "onHandshake",
+      "HTTPContext.onHandshake"
     ],
     "mechanism_keywords": [
-      "TODO"
+      "use-after-free",
+      "UAF",
+      "freed",
+      "deinit",
+      "callback frees",
+      "checkServerIdentity",
+      "closeAndFail",
+      "return early",
+      "after free",
+      "client",
+      "rejectUnauthorized",
+      "hostname mismatch",
+      "synchronous"
     ],
     "decoy_markers": [
-      "TODO"
+      "onAsyncHTTPCallback",
+      "closeAndFail",
+      "checkServerIdentity",
+      "fail()",
+      "boringssl",
+      "the deinit free site"
     ]
   },
   "admission": {
-    "note": "PROVISIONAL scaffold. Author TODO before running: hide the API in symptom.md, verify crash-fn≠cause-fn, fill grading keys, run the thin arm.",
+    "note": "monogram+haiku vs baseline+haiku discrimination. HARD: ASAN points at a write inside onHandshake, but the FREE is several frames deep on the verification-failure path (checkServerIdentity->closeAndFail->...->deinit) which is correct. Solver must see that onHandshake re-touches the client after that synchronous free. Live decoy = the free path itself. Authored from PR #29829 fix diff (early return after checkServerIdentity==false). NOTE: scaffold had root_cause_file=boringssl.zig — corrected to src/http/HTTPContext.zig.",
     "baseline_full_hit_rate_max": 0.5
   },
-  "provenance": "https://github.com/oven-sh/bun/pull/29829 — http: fix use-after-free in onHandshake when checkServerIdentity rejects (u9sf0l) (merged 2026-04-28); base 245c1e4e84ae = merge first-parent."
+  "provenance": "https://github.com/oven-sh/bun/pull/29829 — http: fix use-after-free in onHandshake when checkServerIdentity rejects (merged 2026-04-28); fix commit fad191de5856; base 245c1e4e84ae. Root cause + fix extracted from the commit diff (onHandshake early-return; free path = onAsyncHTTPCallback->deinit)."
 }

@@ -5,13 +5,14 @@
   "tag": "7ce412010a66",
   "base_commit": "7ce412010a66",
   "languages": [
-    "zig"
+    "zig",
+    "c"
   ],
-  "category": "intern/deref race (SSLConfig, proxy tunnel)",
-  "crash_site": "TODO — where the crash is OBSERVED (must be a DIFFERENT fn than the cause)",
+  "category": "cross-thread refcount use-after-free (SSLConfig intern() resurrects a dying config)",
+  "crash_site": "SIGSEGV read at 0x0 in the SSL context setup C code (packages/bun-usockets/src/crypto/openssl.c — us_ssl_ctx_use_privatekey_content / us_ssl_ctx_use_certificate_chain, reached via create_ssl_context_from_bun_options): strlen(NULL) on a freed cert/key string. That C code is CORRECT and just assumes a valid pointer; the dangling config reaches it from elsewhere.",
   "buggy_files_to_verify": [
-    "packages/bun-usockets/src/crypto/openssl.c",
     "src/bun.js/api/server/SSLConfig.zig",
+    "packages/bun-usockets/src/crypto/openssl.c",
     "src/bun.js/webcore/fetch.zig",
     "src/bun.js/webcore/fetch/FetchTasklet.zig",
     "src/http.zig",
@@ -20,27 +21,50 @@
     "src/http/HTTPThread.zig"
   ],
   "ground_truth": {
-    "root_cause_file": "packages/bun-usockets/src/crypto/openssl.c",
-    "root_cause_fn": "TODO",
-    "decoy_fn": "TODO — adjacent plausible-but-wrong fn (often the crash site itself)",
+    "root_cause_file": "src/bun.js/api/server/SSLConfig.zig",
+    "root_cause_fn": "GlobalRegistry.intern",
+    "decoy_fn": "the openssl.c crash site (us_ssl_ctx_use_privatekey_content / create_ssl_context_from_bun_options) — CORRECT C that just reads the freed pointer; the NULL-guard added there is defense-in-depth, not the fix. The HTTP-thread deinit/deref path is the co-actor, not the bug.",
     "fix_pr": 27838,
     "fix_commit": "7b8aabb30b6a",
-    "fix_summary": "TODO — see ground_truth.md"
+    "fix_summary": "SSLConfig.GlobalRegistry.intern() called ref() on a cache entry without checking the strong refcount, so when the HTTP thread was mid-deinit (refcount 1->0, destroy() freeing cert/key strings) and the JS thread interned the same config, ref() did a 0->1 resurrection and returned a dangling pointer; ~200us later startProxyHandshake built the SSL context from the freed config -> strlen(NULL). Fix: replace the single ThreadSafeRefCount with a dual strong/weak ThreadSafeWeakableRefCount; intern() now upgrade()s the weak ref (CAS that REFUSES 0->1) and, on failure, replaces the dying entry with a fresh config; remove() pointer-identity-checks so it no-ops if intern() already replaced the slot."
   },
   "grading": {
     "full_must_name": [
-      "TODO"
+      "intern",
+      "GlobalRegistry.intern"
     ],
     "mechanism_keywords": [
-      "TODO"
+      "refcount",
+      "ref count",
+      "ref()",
+      "resurrect",
+      "0->1",
+      "use-after-free",
+      "dangling",
+      "freed",
+      "cross-thread",
+      "race",
+      "deinit",
+      "destroy",
+      "deref",
+      "weak ref",
+      "upgrade",
+      "intern"
     ],
     "decoy_markers": [
-      "TODO"
+      "openssl.c",
+      "strlen",
+      "us_ssl_ctx_use_privatekey_content",
+      "us_ssl_ctx_use_certificate_chain",
+      "create_ssl_context_from_bun_options",
+      "NULL check",
+      "null guard",
+      "startProxyHandshake crash site"
     ]
   },
   "admission": {
-    "note": "PROVISIONAL scaffold. Author TODO before running: hide the API in symptom.md, verify crash-fn≠cause-fn, fill grading keys, run the thin arm.",
+    "note": "monogram+haiku vs baseline+haiku discrimination. HARD + multi-file: the crash is strlen(NULL) deep in correct OpenSSL C glue, but the cause is a cross-thread refcount resurrection in Zig SSLConfig.intern() seven files away, with no text bridge. Live decoy = the correct C crash site (and its defensive NULL guard). Authored from PR #27838 fix diff (single->dual weak-ref refcount; intern upgrade() refuses 0->1). NOTE: scaffold had root_cause_file=openssl.c (the crash SITE) — corrected to SSLConfig.zig (the cause).",
     "baseline_full_hit_rate_max": 0.5
   },
-  "provenance": "https://github.com/oven-sh/bun/pull/27838 — fix: SSLConfig intern/deref race causing segfault in proxy tunnel setup (merged 2026-03-08); base 7ce412010a66 = merge first-parent."
+  "provenance": "https://github.com/oven-sh/bun/pull/27838 — fix SSLConfig intern/deref race in proxy tunnel setup (merged 2026-03-08); fix commit 7b8aabb30b6a; base 7ce412010a66. Repro #27863. Root cause + fix extracted from the commit diff (GlobalRegistry.intern resurrection; ThreadSafeWeakableRefCount redesign)."
 }

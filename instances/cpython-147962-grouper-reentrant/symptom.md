@@ -1,7 +1,11 @@
-TODO — author the symptom. RULE: do NOT name the buggy subsystem/API (it greps straight to the cause).
-Give only the crash trace + observable behavior; make the agent infer the subsystem.
+Grouping an iterable by a key — where the key objects define a custom `__eq__` — intermittently
+crashes with a segfault / use-after-free. It happens when that `__eq__`, invoked while the grouping
+machinery compares the current key against the target key, re-enters the same grouping iterator and
+mutates its state (advances it / drops the current key) during the comparison.
 
-(reference, do NOT paste verbatim — PR title: gh-146613: Fix re-entrant use-after-free in itertools._grouper)
+The C grouping step is comparing two key objects by borrowed pointer; one of them gets freed inside
+the user comparison, and the step then dereferences freed memory. Plain keys (default `__eq__`, no
+re-entrancy) never crash.
 
 End your reply with exactly:
 ROOTCAUSE: <file path>::<function>

@@ -126,18 +126,42 @@ fn shared_clone(
             .status()
             .map_err(|e| format!("git clone: {e}"))?;
     }
-    Command::new("git")
+    // defensive: a killed prior prepare can leave a stale index.lock that blocks every index op
+    let _ = std::fs::remove_file(c.join(".git").join("index.lock"));
+    let co = Command::new("git")
         .arg("-C")
         .arg(&c)
-        .args(["checkout", "--quiet", tag])
+        .args(["checkout", "--quiet", "--force", tag])
         .output()
         .map_err(|e| format!("git checkout: {e}"))?;
-    Command::new("git")
+    if !co.status.success() {
+        return Err(format!(
+            "git checkout {tag} failed (corrupt/partial clone of {}): {}",
+            c.display(),
+            String::from_utf8_lossy(&co.stderr).trim()
+        ));
+    }
+    let _ = Command::new("git")
         .arg("-C")
         .arg(&c)
         .args(["checkout", "--", "."])
+        .output();
+    // verify the working tree actually populated. A silent empty checkout (blob:none corruption,
+    // interrupted fetch, or stale lock) otherwise yields a 0-file index that quietly degrades the
+    // tool arm to bare grep and produces misleading grades — node-* hit exactly this. Fail loud.
+    let tracked = Command::new("git")
+        .arg("-C")
+        .arg(&c)
+        .args(["ls-files"])
         .output()
-        .map_err(|e| format!("git checkout -- .: {e}"))?;
+        .map(|o| o.stdout.iter().filter(|&&b| b == b'\n').count())
+        .unwrap_or(0);
+    if tracked == 0 {
+        return Err(format!(
+            "clone working tree empty after checkout of {tag} (corrupt/partial clone — `rm -rf {}` to force a fresh clone)",
+            c.display()
+        ));
+    }
     Ok(c)
 }
 
@@ -468,7 +492,22 @@ fn save_prepared_monogram_snapshot(
 
 fn prepared_monogram_snapshot_ready(out: &Path, tool: &str) -> bool {
     let snap_dir = prepared_snapshot_dir(out, tool);
-    snap_dir.join("monogram.db").is_file() && snap_dir.join("manifest.tsv").is_file()
+    let db = snap_dir.join("monogram.db");
+    if !db.is_file() || !snap_dir.join("manifest.tsv").is_file() {
+        return false;
+    }
+    // verify the snapshot is NON-EMPTY. A snapshot prepared before the shared clone finished
+    // indexing copies an empty source DB (0 files); reusing it silently degrades the tool arm to
+    // bare grep (node-*/threadpool/freeparser hit this). Re-prepare instead of reusing empty.
+    let files = Command::new("sqlite3")
+        .arg(&db)
+        .arg("SELECT count(*) FROM files;")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|s| s.trim().parse::<i64>().ok())
+        .unwrap_or(0);
+    files > 0
 }
 
 fn refresh_prepared_requested() -> bool {

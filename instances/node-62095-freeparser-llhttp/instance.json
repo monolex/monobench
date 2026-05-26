@@ -5,37 +5,55 @@
   "tag": "8edeff9aa715",
   "base_commit": "8edeff9aa715",
   "languages": [
-    "c++",
-    "js"
+    "js",
+    "c++"
   ],
-  "category": "re-entrancy UAF (freeParser during llhttp_execute)",
-  "crash_site": "TODO — where the crash is OBSERVED (must be a DIFFERENT fn than the cause)",
+  "category": "re-entrancy use-after-free (parser freed while llhttp_execute is on the stack)",
+  "crash_site": "SIGSEGV / use-after-free in the llhttp parser callbacks (parserOnHeadersComplete / parserOnMessageComplete in src/node_http_parser.cc) when they resume after the parser's state was nullified mid-parse. Those callbacks are correct; the parser was freed underneath them.",
   "buggy_files_to_verify": [
     "lib/_http_common.js",
     "src/node_http_parser.cc"
   ],
   "ground_truth": {
     "root_cause_file": "lib/_http_common.js",
-    "root_cause_fn": "TODO",
-    "decoy_fn": "TODO — adjacent plausible-but-wrong fn (often the crash site itself)",
+    "root_cause_fn": "freeParser",
+    "decoy_fn": "the llhttp callbacks where it crashes (parserOnHeadersComplete etc.) — correct; cleanParser (it just nullifies, as designed). The bug is freeParser running cleanParser() while llhttp_execute() is still on the stack (re-entrancy via a synchronous 'close' handler during pipelined parsing).",
     "fix_pr": 62095,
     "fix_commit": "a06e789625ec",
-    "fix_summary": "TODO — see ground_truth.md"
+    "fix_summary": "When pipelined requests arrive in one TCP segment, llhttp_execute() parses them sequentially; a synchronous 'close' handler fired mid-parse can call freeParser(), which immediately ran cleanParser() and nullified parser state while llhttp_execute() was still on the call stack -> subsequent callbacks dereferenced freed parser members (UAF). Fix: in freeParser() call parser.remove() before cleanParser() (let the parser stack unwind first), and add an is_being_freed_ flag (set by markFreed()) that the C++ callback dispatcher Proxy::Raw checks to abort llhttp callbacks early."
   },
   "grading": {
     "full_must_name": [
-      "TODO"
+      "freeParser",
+      "cleanParser",
+      "Proxy::Raw",
+      "is_being_freed_"
     ],
     "mechanism_keywords": [
-      "TODO"
+      "use-after-free",
+      "UAF",
+      "reentrant",
+      "re-enter",
+      "llhttp_execute",
+      "on the stack",
+      "freeParser",
+      "cleanParser",
+      "pipelined",
+      "close handler",
+      "nullified",
+      "is_being_freed_",
+      "remove"
     ],
     "decoy_markers": [
-      "TODO"
+      "parserOnHeadersComplete",
+      "parserOnMessageComplete",
+      "llhttp callbacks",
+      "the parser callback crash site"
     ]
   },
   "admission": {
-    "note": "PROVISIONAL scaffold. Author TODO before running: hide the API in symptom.md, verify crash-fn≠cause-fn, fill grading keys, run the thin arm.",
+    "note": "monogram+haiku vs baseline+haiku discrimination. HARD: ASAN/crash is in llhttp callbacks, but the cause is freeParser() nullifying parser state mid-llhttp_execute via a re-entrant synchronous close handler during pipelined parsing. Live decoy = the crashing callbacks. Authored from PR #62095 fix diff (reorder remove() before cleanParser; is_being_freed_ guard in Proxy::Raw).",
     "baseline_full_hit_rate_max": 0.5
   },
-  "provenance": "https://github.com/nodejs/node/pull/62095 — http: fix use-after-free when freeParser is called during llhttp_execute (merged 2026-03-06); base 8edeff9aa715 = merge first-parent."
+  "provenance": "https://github.com/nodejs/node/pull/62095 — http: fix UAF when freeParser is called during llhttp_execute (merged 2026-03-06); fix commit a06e789625ec; base 8edeff9aa715. Root cause + fix from the commit diff (freeParser reorder + is_being_freed_ in node_http_parser.cc)."
 }

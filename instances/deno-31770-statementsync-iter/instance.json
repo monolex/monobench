@@ -8,33 +8,50 @@
     "rust",
     "js"
   ],
-  "category": "UAF (StatementSync JS iterator)",
-  "crash_site": "TODO — where the crash is OBSERVED (must be a DIFFERENT fn than the cause)",
+  "category": "GC lifetime use-after-free (iterator outlives its StatementSync wrapper; native statement finalized mid-iteration)",
+  "crash_site": "SIGSEGV / memory corruption during a `for...of` over the iterator returned by node:sqlite StatementSync.iterate(): a step (next/return) accesses the native statement handle after cppgc finalized the StatementSync wrapper. The native next/return code is correct; it was handed a finalized statement.",
   "buggy_files_to_verify": [
     "ext/node/ops/sqlite/statement.rs"
   ],
   "ground_truth": {
     "root_cause_file": "ext/node/ops/sqlite/statement.rs",
-    "root_cause_fn": "TODO",
-    "decoy_fn": "TODO — adjacent plausible-but-wrong fn (often the crash site itself)",
+    "root_cause_fn": "StatementSync::iterate",
+    "decoy_fn": "the iterator's next_func / return_func (they crash but are correct — they just deref the handle); the cppgc finalizer for StatementSync. The bug is iterate() building an iterator that does NOT keep the wrapper alive.",
     "fix_pr": 31770,
     "fix_commit": "8d47d7e24402",
-    "fix_summary": "TODO — see ground_truth.md"
+    "fix_summary": "StatementSync::iterate() returns a JS iterator object that references the native next_func/return_func but holds NO reference to the StatementSync wrapper (args.this()). cppgc can therefore collect the wrapper — finalizing the native statement handle — while the iterator is still live, leaving next/return with a dangling pointer (use-after-free). Fix: store a hidden `__STATEMENT_REF` property on the iterator pointing at the wrapper, so the reference chain iterator -> statement keeps the handle alive for the iterator's lifetime."
   },
   "grading": {
     "full_must_name": [
-      "TODO"
+      "iterate",
+      "StatementSync::iterate"
     ],
     "mechanism_keywords": [
-      "TODO"
+      "use-after-free",
+      "UAF",
+      "garbage collect",
+      "cppgc",
+      "finalize",
+      "wrapper",
+      "reference",
+      "__STATEMENT_REF",
+      "keep alive",
+      "dangling",
+      "iterator",
+      "statement handle",
+      "lifetime"
     ],
     "decoy_markers": [
-      "TODO"
+      "next_func",
+      "return_func",
+      "iterator next/return",
+      "statement finalizer",
+      "the for...of loop"
     ]
   },
   "admission": {
-    "note": "PROVISIONAL scaffold. Author TODO before running: hide the API in symptom.md, verify crash-fn≠cause-fn, fill grading keys, run the thin arm.",
+    "note": "monogram+haiku vs baseline+haiku discrimination. HARD: crash is in the iterator step touching a finalized statement, but the cause is iterate() omitting a strong reference from the iterator to its StatementSync wrapper, letting GC finalize the handle mid-iteration. Live decoy = the crashing next/return code. Authored from PR #31770 fix diff (add __STATEMENT_REF = args.this()).",
     "baseline_full_hit_rate_max": 0.5
   },
-  "provenance": "https://github.com/denoland/deno/pull/31770 — fix(ext/node): fix use-after-free in StatementSync JS iterator (merged 2026-01-08); base 7558cafe636c = merge first-parent."
+  "provenance": "https://github.com/denoland/deno/pull/31770 — fix(ext/node) UAF in StatementSync JS iterator (merged 2026-01-08); fix commit 8d47d7e24402; base 7558cafe636c. Root cause + fix from the commit diff (StatementSync::iterate adds __STATEMENT_REF wrapper ref)."
 }

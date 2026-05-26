@@ -2169,3 +2169,101 @@ Audit for the latest run shows `free_site_triage x1`, zero oversized output, and
 two guarded search no-matches that recovered through NEXT. Compared with the
 earlier FULL at 110s/42 calls and the pre-triage MISS at 190s/67 calls, the
 free-site ranking continues to improve rather than regress.
+
+## toThreadSafe: signature-shaped context seeds
+
+The latest `bun-1.3.10-toThreadSafe` Spark run was FULL:
+
+```text
+monogram-codex-gpt-5.3-codex-spark-high-r1-t1779637450884
+FULL  $1.01  270s  48 calls  ·48 monogram
+ROOTCAUSE: src/bun.js/bindings/BunString.cpp::BunString__toThreadSafe
+```
+
+The run was successful, but it exposed a small command-surface gap:
+
+```text
+monogram context "ref()(this: String)" --file ./src/string.zig --code 80
+No entry-point symbols resolved from seeds: ["ref"]
+```
+
+Agents coming from raw grep output often paste signature-shaped strings into
+`context`. `grep` already has identifier-before-paren fallback; `context` did
+not. `context` now resolves filtered signature/call-shaped seeds to the
+identifier before `(` and emits:
+
+```text
+context_signature_symbol_redirect
+```
+
+Smoke checks:
+
+```text
+context "ref()(this: String)" --file ./src/string.zig
+  -> ref at ./src/string.zig:877
+
+context "toWTFString()" --file ./src/bun.js/bindings/BunString.cpp
+  -> toWTFString at ./src/bun.js/bindings/BunString.cpp:765
+```
+
+This is a narrow UX fix, but it removes a recurring no-entry hop in C/C++/Zig
+debugging where the agent has a real function signature but not the exact
+indexed symbol seed.
+
+A follow-up Spark rerun could not be counted: `codex exec` hit
+`invalid_grant: Invalid refresh token`, stopped writing answer output, and was
+terminated as an external runner/auth failure. The smoke checks above verify the
+CLI behavior; the next solver-level verification should use agy or a refreshed
+Spark session.
+
+## 2026-05-24 Loop: via-niia agy permission prompt
+
+The first `--via niia --cli agy` rerun after the Spark auth failure was also not
+valid evidence. It did not test monogram; the answer file was an agy permission
+prompt:
+
+```text
+Bash(niia)
+Requesting permission for: niia
+```
+
+Direct agy runs already use `--dangerously-skip-permissions`, but the niia
+interactive runner spawned plain `agy`. The runner now adds
+`--dangerously-skip-permissions` for `spawn_command("agy", ...)`, including
+`MONOBENCH_CLI=agy ...` overrides that omit the flag.
+
+The rebuilt canary then exposed a separate artifact bug. `niia_runner` used
+`Path::with_extension("answer.txt")` and `with_extension("meter.json")`.
+For dotted model labels such as `gemini-3.5-flash-medium`, that wrote files as
+`monogram-agy-gemini-3.answer.txt` instead of preserving the full timestamped
+run id. The fix appends artifact suffixes to the file name instead:
+`<runid>.answer.txt` and `<runid>.meter.json`.
+
+The invalid orphan artifacts from the pre-build and dotted-name runs were
+deleted from the result set.
+
+A third invalid canary showed that plain interactive agy is not stable enough in
+the niia headless session: it produced a shell tail and no agy transcript. A
+fourth invalid canary showed that pasting the entire prompt into one terminal
+command is also too large. The runner now writes the prompt to a temp file and
+handles `--via niia --cli agy` as a short one-shot terminal command:
+`agy --print "$(cat <prompt-file>)" --dangerously-skip-permissions --log-file
+<run>.agy.log`. The niia path still exercises `write`/`wait-idle`/`get-answer`,
+but no longer depends on the agy interactive TUI or a huge pasted command line.
+
+The runner also writes a per-run `MONOBENCH_CAPTURE_<runid>` marker before the
+solver command and captures by that marker first, falling back to `ROOTCAUSE`
+only if marker capture fails. This prevents old terminal history containing the
+word `ROOTCAUSE` from being mistaken for the current answer.
+
+Verification:
+
+```text
+cargo fmt --check  PASS
+cargo test         PASS, 56 tests
+cargo build        PASS
+```
+
+Next check: rerun the same via-niia agy canary. If it still fails, treat the new
+trace as either a real model/monogram pattern or a separate niia session capture
+issue, but not as the old permission-gate failure.

@@ -331,6 +331,53 @@ fn hum_bytes(n: u64) -> String {
     }
 }
 
+const IDLE_WARN_SECS: u64 = 300; // no new output for 5 min ⇒ likely hung (generous vs reasoning pauses)
+
+// Seconds since this run last wrote a STREAMING log (.err/.jsonl/.agy.jsonl/.agy.log). This is the
+// real "alive but hung" signal — unlike CPU%, which sits near 0 while an API model reasons server-side.
+fn live_output_age(dir: &Path, stem: &str) -> Option<u64> {
+    [".err", ".jsonl", ".agy.jsonl", ".agy.log"]
+        .iter()
+        .filter_map(|sfx| {
+            std::fs::metadata(dir.join(format!("{stem}{sfx}")))
+                .ok()?
+                .modified()
+                .ok()?
+                .elapsed()
+                .ok()
+                .map(|d| d.as_secs())
+        })
+        .min()
+}
+
+// Pure formatter (testable): "· idle Ns", or "· ⚠ idle Ns" past the warn threshold, "" if no output yet.
+fn idle_label(age: Option<u64>) -> String {
+    match age {
+        Some(a) if a >= IDLE_WARN_SECS => format!(" · ⚠ idle {a}s"),
+        Some(a) => format!(" · idle {a}s"),
+        None => String::new(),
+    }
+}
+
+// Concise stall indicator for an in-flight run.
+fn idle_tag(dir: &Path, stem: &str) -> String {
+    idle_label(live_output_age(dir, stem))
+}
+
+// A `.running` marker records `pid=<N>`; its RAII guard removes it on normal exit AND on panic, so a
+// LINGERING marker whose pid is gone means the run was hard-killed (SIGKILL/OOM) — not still running.
+// Returns that dead pid for the status message (instant crash detection vs the 5-min idle threshold).
+fn dead_run_pid(dir: &Path, stem: &str) -> Option<u32> {
+    let marker = std::fs::read_to_string(dir.join(format!("{stem}.running"))).ok()?;
+    let pid = marker
+        .split_whitespace()
+        .next()?
+        .strip_prefix("pid=")?
+        .parse::<u32>()
+        .ok()?;
+    (!pid_alive(pid)).then_some(pid)
+}
+
 fn file_brief(path: &Path, label: &str) -> Option<String> {
     let meta = std::fs::metadata(path).ok()?;
     let age = meta
@@ -488,6 +535,61 @@ fn answer_source_label(dir: &Path, names: &[String], stem: &str) -> String {
 }
 
 /// Gather every recorded run of an instance as typed RunStats (jsonl + answer + forfeit).
+// Parse a --since duration like "9h" / "30m" / "2d" / "45s" / bare seconds → seconds.
+fn parse_duration_secs(s: &str) -> Option<u64> {
+    let s = s.trim();
+    let (num, mult) = match s.chars().last()? {
+        'h' | 'H' => (&s[..s.len() - 1], 3600u64),
+        'm' | 'M' => (&s[..s.len() - 1], 60),
+        'd' | 'D' => (&s[..s.len() - 1], 86400),
+        's' | 'S' => (&s[..s.len() - 1], 1),
+        _ => (s, 1),
+    };
+    num.trim().parse::<u64>().ok().map(|n| n * mult)
+}
+
+// Epoch-ms start time embedded in a timestamped run label (`…-t<ms>`); None for legacy `-rN` labels.
+fn run_start_ms(label: &str) -> Option<u64> {
+    let pos = label.rfind("-t")?;
+    let tail = &label[pos + 2..];
+    (!tail.is_empty() && tail.bytes().all(|b| b.is_ascii_digit()))
+        .then(|| tail.parse::<u64>().ok())
+        .flatten()
+}
+
+// Was this run started at/after `cutoff_secs`? Prefers the label's own start time (`-t<ms>`, robust
+// to file touches); falls back to freshest artifact mtime for legacy labels with no `-t`.
+fn run_since(root: &Path, id: &str, label: &str, cutoff_secs: u64) -> bool {
+    if let Some(ms) = run_start_ms(label) {
+        return ms / 1000 >= cutoff_secs;
+    }
+    let d = root.join("results").join(id);
+    [".answer.txt", ".jsonl", ".agy.jsonl", ".err"]
+        .iter()
+        .filter_map(|s| {
+            std::fs::metadata(d.join(format!("{label}{s}")))
+                .ok()?
+                .modified()
+                .ok()?
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .map(|x| x.as_secs())
+        })
+        .max()
+        .map(|m| m >= cutoff_secs)
+        .unwrap_or(true)
+}
+
+// If `--since <dur>` is present and valid, returns the cutoff epoch-seconds (keep runs at/after it).
+fn since_cutoff(args: &[String]) -> Option<u64> {
+    let dur = parse_duration_secs(&arg_value(args, "--since")?)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    Some(now.saturating_sub(dur))
+}
+
 fn gather_runs(root: &Path, id: &str) -> Vec<RunStats> {
     let inst = load_inst(
         &root
@@ -770,8 +872,8 @@ fn active_run_procs(rows: &[ProcInfo], id: Option<&str>) -> Vec<ProcInfo> {
     let mut v: Vec<ProcInfo> = rows
         .iter()
         .filter(|p| {
-            let is_controller =
-                p.cmd.contains("monobench run ") || p.cmd.contains("monobench matrix ");
+            let is_controller = !looks_like_wrapper(&p.cmd)
+                && (p.cmd.contains("monobench run ") || p.cmd.contains("monobench matrix "));
             is_controller
                 && id
                     .map(|id| {
@@ -806,17 +908,40 @@ fn child_phase(rows: &[ProcInfo], pid: &str) -> String {
     "controller".into()
 }
 
+// A process that merely *mentions* a solver string — a shell running a grep/script, a search tool,
+// an editor — is NOT a live solver. Real solver/index processes start with the binary
+// (node/codex/claude/monogram/agy), never a shell. Without this guard the active-worker counts
+// over-report for any command line that happens to contain "codex exec"/"claude -p"/etc.
+fn looks_like_wrapper(cmd: &str) -> bool {
+    let c = cmd.trim_start();
+    c.starts_with('-') // login shells: -zsh, -bash
+        || c.starts_with("/bin/zsh")
+        || c.starts_with("/bin/bash")
+        || c.starts_with("/bin/sh")
+        || c.starts_with("zsh ")
+        || c.starts_with("bash ")
+        || c.starts_with("sh ")
+        || c.starts_with("grep")
+        || c.starts_with("egrep")
+        || c.starts_with("rg ")
+        || c.contains("shell-snapshots") // Claude Code's bash wrapper
+}
+
 fn active_counts(rows: &[ProcInfo]) -> (usize, usize, usize, usize, usize) {
+    let live = |needle: &str| {
+        rows.iter()
+            .filter(|p| !looks_like_wrapper(&p.cmd) && p.cmd.contains(needle))
+            .count()
+    };
     let runs = active_run_procs(rows, None).len();
-    let index = rows
-        .iter()
-        .filter(|p| p.cmd.contains("monogram index"))
-        .count();
-    let claude = rows.iter().filter(|p| p.cmd.contains("claude -p")).count();
-    let codex = rows.iter().filter(|p| p.cmd.contains("codex exec")).count();
+    let index = live("monogram index");
+    let claude = live("claude -p");
+    let codex = live("codex exec");
     let agy = rows
         .iter()
-        .filter(|p| p.cmd.contains("agy ") && p.cmd.contains("--print"))
+        .filter(|p| {
+            !looks_like_wrapper(&p.cmd) && p.cmd.contains("agy ") && p.cmd.contains("--print")
+        })
         .count();
     (runs, index, claude, codex, agy)
 }
@@ -1093,6 +1218,76 @@ fn warn_if_grading_incomplete(root: &Path, id: &str) {
     }
 }
 
+fn matrix_state_path(root: &Path) -> PathBuf {
+    root.join(".matrix-state")
+}
+
+// Best-effort matrix liveness record, sibling to `.matrix-stop`: written once when a matrix starts
+// and removed when it ends. Every write ignores errors so it can NEVER disturb the benchmark; the
+// reader self-heals a stale file (matrix crashed without cleanup) via a pid liveness check.
+fn write_matrix_state(
+    root: &Path,
+    pid: u32,
+    id: &str,
+    total: usize,
+    jobs: usize,
+    cli: &str,
+    model: &str,
+) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let v = serde_json::json!({
+        "pid": pid, "id": id, "total": total, "jobs": jobs,
+        "cli": cli, "model": model, "started_at": now,
+    });
+    let _ = std::fs::write(matrix_state_path(root), v.to_string());
+}
+
+fn clear_matrix_state(root: &Path) {
+    let _ = std::fs::remove_file(matrix_state_path(root));
+}
+
+fn pid_alive(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+// Returns (instance_id, display_line) for a LIVE matrix; clears the file and returns None if the
+// recorded pid is gone (crashed matrix left a stale marker).
+fn read_matrix_state(root: &Path) -> Option<(String, String)> {
+    let txt = std::fs::read_to_string(matrix_state_path(root)).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&txt).ok()?;
+    let pid = v.get("pid")?.as_u64()? as u32;
+    if !pid_alive(pid) {
+        let _ = std::fs::remove_file(matrix_state_path(root));
+        return None;
+    }
+    let id = v
+        .get("id")
+        .and_then(|x| x.as_str())
+        .unwrap_or("?")
+        .to_string();
+    let total = v.get("total").and_then(|x| x.as_u64()).unwrap_or(0);
+    let cli = v.get("cli").and_then(|x| x.as_str()).unwrap_or("?");
+    let model = v.get("model").and_then(|x| x.as_str()).unwrap_or("?");
+    let started = v.get("started_at").and_then(|x| x.as_u64()).unwrap_or(0);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let elapsed = now.saturating_sub(started);
+    let line =
+        format!("matrix: {id} · {cli}/{model} · {total} runs · pid {pid} · {elapsed}s (`monobench stop` to halt)");
+    Some((id, line))
+}
+
 fn die(msg: &str) -> ! {
     eprintln!("monobench: {msg}");
     std::process::exit(1);
@@ -1170,6 +1365,7 @@ fn main() {
                 "  monobench run <id> <tool> 1                                  # one arm, one run"
             );
             println!("  monobench matrix <id> --tools baseline,monogram --cli claude --model haiku --runs 3");
+            println!("  monobench sweep --all --tools baseline --cli claude --model haiku --jobs 3   # many instances; cross-repo parallel, same-repo serialized");
         }
 
         "status" => {
@@ -1177,9 +1373,21 @@ fn main() {
             let d = root.join("results").join(id);
             println!("status: {id}");
             warn_if_grading_incomplete(&root, id);
-            let names = list_dir_names(&d);
+            let mut names = list_dir_names(&d);
+            // chronological: runs with an embedded -t<ms> start time first-to-last, legacy (none) lead.
+            names.sort_by(|a, b| {
+                util::label_start_ms(a)
+                    .unwrap_or(0)
+                    .cmp(&util::label_start_ms(b).unwrap_or(0))
+                    .then_with(|| a.cmp(b))
+            });
             let detail = args.iter().any(|s| s == "--detail");
             let stats = gather_runs(&root, id);
+            let started_at = |label: &str| -> String {
+                util::label_start_ms(label)
+                    .map(util::fmt_utc_ms)
+                    .unwrap_or_else(|| "—".into())
+            };
             let time_for = |label: &str| -> String {
                 stats
                     .iter()
@@ -1203,14 +1411,21 @@ fn main() {
                                 String::new()
                             }
                         )
-                    } else {
+                    } else if let Some(dead) = dead_run_pid(&d, b) {
                         format!(
-                            "running ({}c){}",
+                            "⚠ crashed (pid {dead} gone, {}c){}",
                             txt.matches("\"type\":\"tool_use\"").count(),
                             io_brief(&d, b)
                         )
+                    } else {
+                        format!(
+                            "running ({}c){}{}",
+                            txt.matches("\"type\":\"tool_use\"").count(),
+                            idle_tag(&d, b),
+                            io_brief(&d, b)
+                        )
                     };
-                    println!("  {:<34} {}", b, st);
+                    println!("  {:<34} {:>12} {}", b, started_at(b), st);
                 }
             }
             for n in &names {
@@ -1218,8 +1433,9 @@ fn main() {
                     if !names.contains(&format!("{b}.jsonl")) {
                         let source = answer_source_label(&d, &names, b);
                         println!(
-                            "  {:<34} done ({}){}{}",
+                            "  {:<34} {:>12} done ({}){}{}",
                             b,
+                            started_at(b),
                             source,
                             time_for(b),
                             if detail {
@@ -1233,7 +1449,7 @@ fn main() {
             }
             for n in &names {
                 if let Some(b) = n.strip_suffix(".forfeit") {
-                    println!("  {:<34} FORFEIT", b);
+                    println!("  {:<34} {:>12} FORFEIT", b, started_at(b));
                 }
             }
             for n in &names {
@@ -1250,7 +1466,23 @@ fn main() {
                         .next()
                         .unwrap_or("")
                         .to_string();
-                    println!("  {:<34} running {}{}", b, detail, io_brief(&d, b));
+                    if let Some(dead) = dead_run_pid(&d, b) {
+                        println!(
+                            "  {:<34} {:>12} ⚠ crashed (pid {dead} gone, stale marker){}",
+                            b,
+                            started_at(b),
+                            io_brief(&d, b)
+                        );
+                    } else {
+                        println!(
+                            "  {:<34} {:>12} running {}{}{}",
+                            b,
+                            started_at(b),
+                            detail,
+                            idle_tag(&d, b),
+                            io_brief(&d, b)
+                        );
+                    }
                 }
             }
             let rows = ps_rows();
@@ -1267,17 +1499,23 @@ fn main() {
                 "  active → runs:{} index:{} claude:{} codex:{} agy:{} worktrees:{}",
                 runs, index, claude, codex, agy, wt
             );
+            if let Some((sid, line)) = read_matrix_state(&root) {
+                if sid == id {
+                    println!("  {line}");
+                }
+            }
             println!("\n[NEXT]");
             println!("  monobench report {id}        # grades + cost/tokens once runs finish");
             println!("  monobench watch --live       # refresh while in flight  ·  monobench run {id} <arm>");
         }
 
-        // Graceful matrix stop — write the stop file the worker loop polls.
+        // Graceful matrix/sweep stop — write the stop files the worker loops poll.
         "stop" => {
             let stopf = root.join(".matrix-stop");
             std::fs::write(&stopf, b"stop").ok();
+            std::fs::write(root.join(".sweep-stop"), b"stop").ok(); // sweep has its own poll file
             println!("stop signalled → {}", stopf.display());
-            println!("  running matrix workers finish their CURRENT run and launch no more.");
+            println!("  running matrix/sweep workers finish their CURRENT run and launch no more.");
             println!("  for immediate CPU relief of in-flight runs: pkill -f 'claude -p'  (they will NOT respawn now).");
         }
 
@@ -1379,6 +1617,9 @@ fn main() {
                 .count();
             let (runs, index, claude, codex, agy) = active_counts(&rows);
             println!("totals: running {tot_run} · done {tot_done}   active → runs:{runs} index:{index} claude:{claude} codex:{codex} agy:{agy} worktrees:{wt}");
+            if let Some((_, line)) = read_matrix_state(&root) {
+                println!("{line}");
+            }
             println!("\n[NEXT]");
             println!("  monobench status <id> --live --every 5   # drill into one instance, live");
             println!("  monobench report <id>                    # grades once a run set finishes");
@@ -1516,6 +1757,7 @@ fn main() {
         }
 
         "matrix" => run_matrix(&root, &args),
+        "sweep" => run_sweep(&root, &args),
 
         "grade" => {
             let id = a(1).unwrap_or_else(|| die("usage: monobench grade <id> [run]"));
@@ -1752,25 +1994,72 @@ fn main() {
         }
 
         "report" => {
-            let id = a(1).unwrap_or_else(|| die("usage: monobench report <id>"));
+            let id =
+                a(1).unwrap_or_else(|| die("usage: monobench report <id> [--since 9h|30m|2d]"));
             warn_if_grading_incomplete(&root, id);
-            report::report(&root, id, &gather_runs(&root, id));
+            let mut runs = gather_runs(&root, id);
+            if let Some(cut) = since_cutoff(&args) {
+                let before = runs.len();
+                runs.retain(|r| run_since(&root, id, &r.label, cut));
+                println!(
+                    "[--since {}] {} of {before} runs started within the window\n",
+                    arg_value(&args, "--since").unwrap_or_default(),
+                    runs.len()
+                );
+            }
+            report::report(&root, id, &runs);
         }
 
         "summary" => {
             // cross-instance leaderboard: FULL hit-rate per arm × instance
+            let cut = since_cutoff(&args);
             let insts: Vec<(String, Vec<RunStats>)> = list_dir_names(&root.join("instances"))
                 .into_iter()
                 .filter(|id| id != "_TEMPLATE")
                 .map(|id| {
-                    let r = gather_runs(&root, &id);
+                    let mut r = gather_runs(&root, &id);
+                    if let Some(c) = cut {
+                        r.retain(|rs| run_since(&root, &id, &rs.label, c));
+                    }
                     (id, r)
                 })
                 .collect();
+            if cut.is_some() {
+                println!(
+                    "[--since {}] windowed to runs started within the period\n",
+                    arg_value(&args, "--since").unwrap_or_default()
+                );
+            }
             report::summary(&insts);
             println!("\n[NEXT]");
+            println!("  monobench column <arm>                       # one arm's verified grade breakdown + review coverage");
             println!("  monobench report <id>                       # per-CLI/model detail for one instance");
             println!("  monobench evidence <id> --pattern ROOTCAUSE  # scan each run's conclusion");
+        }
+
+        "column" => {
+            let arm = a(1).unwrap_or_else(|| {
+                die("usage: monobench column <arm>   e.g. baseline-codex-gpt-5.4-mini-low (full arm name from `monobench summary`)")
+            });
+            let cut = since_cutoff(&args);
+            let insts: Vec<(String, Vec<RunStats>)> = list_dir_names(&root.join("instances"))
+                .into_iter()
+                .filter(|id| id != "_TEMPLATE")
+                .map(|id| {
+                    let mut r = gather_runs(&root, &id);
+                    if let Some(c) = cut {
+                        r.retain(|rs| run_since(&root, &id, &rs.label, c));
+                    }
+                    (id, r)
+                })
+                .collect();
+            if cut.is_some() {
+                println!(
+                    "[--since {}] windowed to runs started within the period",
+                    arg_value(&args, "--since").unwrap_or_default()
+                );
+            }
+            report::column(arm, &insts);
         }
 
         "adoption" => {
@@ -1791,8 +2080,18 @@ fn main() {
                 &gather_runs(&root, id),
             );
             println!("\n[NEXT]");
-            println!("  monobench evidence {id} --pattern 'guarded_no_match|database is locked|bad_workdir'");
-            println!("  monobench trace {id} <run>                   # ordered tool-call timeline of one run");
+            println!(
+                "  monobench evidence {id} --pattern 'region_first_next|success_pattern_next|score-debug|ROOTCAUSE'"
+            );
+            println!(
+                "  monobench trace {id} <run>                   # classify: path not closed vs closed but uncalibrated"
+            );
+            println!(
+                "  monobench evidence {id} --pattern 'guarded_no_match|database is locked|bad_workdir'"
+            );
+            println!(
+                "  monobench export {id} <run>                  # compare success/failure rails before maker proposal"
+            );
         }
 
         "meter" => {
@@ -1970,6 +2269,15 @@ fn run_matrix(root: &Path, args: &[String]) {
     let stopf = root.join(".matrix-stop");
     let _ = std::fs::remove_file(&stopf); // clear any stale stop from a prior run
     println!("  (pid {} · stop cleanly with `monobench stop` — workers finish current run, launch no more)", std::process::id());
+    write_matrix_state(
+        root,
+        std::process::id(),
+        &id,
+        combos.len(),
+        jobs,
+        &cli,
+        &model,
+    );
     let wtlock = Arc::new(Mutex::new(())); // serializes git-worktree add/remove
     let queue = Arc::new(Mutex::new(
         combos
@@ -2022,6 +2330,7 @@ fn run_matrix(root: &Path, args: &[String]) {
     }
     let stopped = stopf.exists();
     let _ = std::fs::remove_file(&stopf);
+    clear_matrix_state(root);
     println!(
         "{}",
         if stopped {
@@ -2034,9 +2343,415 @@ fn run_matrix(root: &Path, args: &[String]) {
     adoption::adoption(&id, &telemetry_paths(&root.join("results").join(&id)));
 }
 
+// Cross-instance sweep: run MANY instances in ONE process with a per-repo lock map.
+// Each repo (bun, cpython, …) gets its own Mutex, so same-repo `git worktree add`s
+// serialize on their shared base (safe) while different repos run in parallel — overlapping
+// the slow cpython/node first-clones. The worktree lock is an injected `&Mutex` at run::run,
+// so this reuses the proven matrix worker path with no change to run.rs (beyond exposing
+// repo_basename). Cross-process safety is unneeded: it's one process, like `--jobs`.
+fn run_sweep(root: &Path, args: &[String]) {
+    let usage = "usage: monobench sweep <id,id,...|--all> [--tools a,b] [--cli c] [--model x] [--via direct|niia] [--runs N] [--jobs J] [--prepared]";
+    let first = args.get(1).cloned().unwrap_or_default();
+    if first.is_empty() || (first.starts_with("--") && first != "--all") {
+        die(usage);
+    }
+    let (mut tools, mut model, mut cli_arg, mut via_arg, mut runs, mut jobs) = (
+        "baseline".to_string(),
+        std::env::var("MONOBENCH_MODEL").unwrap_or_else(|_| "haiku".into()),
+        None::<String>,
+        None::<String>,
+        1usize,
+        3usize,
+    );
+    let mut tag = None::<String>;
+    let mut note = None::<String>;
+    let mut prepared = false;
+    let mut i = 2;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--tools" => {
+                tools = args.get(i + 1).cloned().unwrap_or(tools);
+                i += 2;
+            }
+            "--model" | "--models" => {
+                model = args.get(i + 1).cloned().unwrap_or(model);
+                i += 2;
+            }
+            "--cli" => {
+                cli_arg = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--via" => {
+                via_arg = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--effort" => {
+                if let Some(e) = args.get(i + 1) {
+                    std::env::set_var("MONOBENCH_EFFORT", e);
+                }
+                i += 2;
+            }
+            "--runs" => {
+                runs = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(runs);
+                i += 2;
+            }
+            "--jobs" => {
+                jobs = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(jobs);
+                i += 2;
+            }
+            "--tag" | "--batch" => {
+                tag = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--note" | "--memo" => {
+                note = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--prepared" => {
+                prepared = true;
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    // instance list: explicit comma list, or every instance dir (skip _TEMPLATE) for --all
+    let ids: Vec<String> = if first == "--all" {
+        let mut v: Vec<String> = std::fs::read_dir(root.join("instances"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| !n.starts_with('_'))
+            .filter(|n| {
+                root.join("instances")
+                    .join(n)
+                    .join("instance.json")
+                    .is_file()
+            })
+            .collect();
+        v.sort();
+        v
+    } else {
+        first
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect()
+    };
+    if ids.is_empty() {
+        die("no instances selected");
+    }
+    let ts: Vec<String> = tools
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+    let ms: Vec<String> = model
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+    if ms.len() != 1 {
+        die("sweep accepts exactly one model per command; repeat the sweep once per model");
+    }
+    let model = ms[0].clone();
+    let (cli, via) = axes_for(&model, cli_arg, via_arg);
+
+    // Resolve each id's repo and build the per-repo lock map. ids without a repo are skipped.
+    // Same base ⇒ same Mutex ⇒ worktree adds serialize; different base ⇒ different Mutex ⇒ parallel.
+    let mut repo_of: HashMap<String, String> = HashMap::new();
+    let mut locks: HashMap<String, Arc<Mutex<()>>> = HashMap::new();
+    let mut runnable: Vec<String> = vec![];
+    for id in &ids {
+        let ij = read_json(&root.join("instances").join(id).join("instance.json"));
+        match ij.get("repo").and_then(serde_json::Value::as_str) {
+            Some(repo) if !repo.is_empty() => {
+                let base = run::repo_basename(repo);
+                locks
+                    .entry(base.clone())
+                    .or_insert_with(|| Arc::new(Mutex::new(())));
+                repo_of.insert(id.clone(), base);
+                runnable.push(id.clone());
+            }
+            _ => eprintln!("  skip {id}: instance.json has no repo"),
+        }
+    }
+    if runnable.is_empty() {
+        die("no runnable instances (none had a repo)");
+    }
+
+    // Build (id, repo, tool, run) jobs, then interleave round-robin across repos so the worker
+    // pool spans different bases first — the cross-repo overlap that hides the slow clones.
+    let mut by_repo: std::collections::BTreeMap<
+        String,
+        std::collections::VecDeque<(String, String, String, usize)>,
+    > = Default::default();
+    for id in &runnable {
+        let base = repo_of[id].clone();
+        for t in &ts {
+            for r in 1..=runs {
+                by_repo.entry(base.clone()).or_default().push_back((
+                    id.clone(),
+                    base.clone(),
+                    t.clone(),
+                    r,
+                ));
+            }
+        }
+    }
+    let mut ordered: Vec<(String, String, String, usize)> = vec![];
+    let mut any = true;
+    while any {
+        any = false;
+        for q in by_repo.values_mut() {
+            if let Some(j) = q.pop_front() {
+                ordered.push(j);
+                any = true;
+            }
+        }
+    }
+    let n = ordered.len();
+    println!(
+        "sweep {} instance(s) over {} repo(s) · {{{tools}}} × cli={cli} × model={model} × via={via} × runs={runs} = {n} runs · jobs={jobs}",
+        runnable.len(),
+        locks.len()
+    );
+    println!("  per-repo lock: same-repo worktree-adds serialize, different repos run in parallel");
+
+    if prepared {
+        let prep_tools: Vec<String> = ts.iter().filter(|t| *t != "baseline").cloned().collect();
+        if !prep_tools.is_empty() {
+            for id in &runnable {
+                if run::prepare(root, id, &prep_tools, &Mutex::new(())) != 0 {
+                    die(&format!("prepare failed for {id}"));
+                }
+            }
+        }
+        std::env::set_var("MONOBENCH_PREPARED", "1");
+    } else {
+        std::env::remove_var("MONOBENCH_PREPARED");
+    }
+    std::env::set_var("MONOBENCH_ISOLATE", "worktree"); // constant across threads ⇒ no race
+
+    // sweep owns a dedicated stop file, kept separate from the matrix's .matrix-stop so a
+    // concurrent matrix is never affected (`monobench stop` writes both). Workers poll it
+    // before pulling each job — graceful drain, same contract as the matrix.
+    let stopf = root.join(".sweep-stop");
+    let _ = std::fs::remove_file(&stopf);
+    println!(
+        "  (pid {} · stop cleanly with `monobench stop` — workers finish current run, launch no more)",
+        std::process::id()
+    );
+
+    let queue = Arc::new(Mutex::new(
+        ordered
+            .into_iter()
+            .collect::<std::collections::VecDeque<_>>(),
+    ));
+    let locks = Arc::new(locks);
+    let root_arc = Arc::new(root.to_path_buf());
+    let stop_arc = Arc::new(stopf.clone());
+    let mut handles = vec![];
+    for _ in 0..jobs.max(1) {
+        let q = Arc::clone(&queue);
+        let lk = Arc::clone(&locks);
+        let cli2 = cli.clone();
+        let model2 = model.clone();
+        let via2 = via.clone();
+        let tag2 = tag.clone();
+        let note2 = note.clone();
+        let r2 = Arc::clone(&root_arc);
+        let stop = Arc::clone(&stop_arc);
+        handles.push(std::thread::spawn(move || loop {
+            if stop.exists() {
+                break;
+            } // graceful stop — do not pull a new job
+            let Some((id, base, t, r)) = ({
+                let mut g = q.lock().unwrap();
+                g.pop_front()
+            }) else {
+                break;
+            };
+            let lock: &Mutex<()> = lk.get(&base).expect("per-repo lock built for every job");
+            run::run(
+                &r2,
+                &id,
+                &t,
+                &cli2,
+                &model2,
+                &via2,
+                r,
+                Some(runs),
+                tag2.as_deref(),
+                note2.as_deref(),
+                true,
+                lock,
+            ); // quiet=true
+            println!("  ✓ {id} / {t} / {cli2} / {model2} r{r}");
+        }));
+    }
+    for h in handles {
+        let _ = h.join();
+    }
+    let stopped = stopf.exists();
+    let _ = std::fs::remove_file(&stopf);
+    println!(
+        "{}",
+        if stopped {
+            "── sweep stopped (`monobench stop`) — remaining queue skipped ──"
+        } else {
+            "── sweep done ──"
+        }
+    );
+    println!("[NEXT]  monobench summary        # grades + cost/tokens across all swept instances");
+}
+
 #[cfg(test)]
 mod main_tests {
     use super::*;
+
+    #[test]
+    fn idle_label_flags_stall_past_threshold() {
+        assert_eq!(idle_label(None), "");
+        assert_eq!(idle_label(Some(3)), " · idle 3s");
+        // a working run just below the threshold has no warning
+        assert_eq!(
+            idle_label(Some(IDLE_WARN_SECS - 1)),
+            format!(" · idle {}s", IDLE_WARN_SECS - 1)
+        );
+        // no streaming output for >= the threshold ⇒ flagged as likely hung
+        assert!(idle_label(Some(IDLE_WARN_SECS)).contains("⚠ idle"));
+        assert!(idle_label(Some(900)).contains("⚠ idle 900s"));
+    }
+
+    #[test]
+    fn active_counts_ignores_shells_that_merely_mention_solvers() {
+        let mk = |cmd: &str| ProcInfo {
+            pid: "1".into(),
+            ppid: "0".into(),
+            etime: "0:05".into(),
+            cmd: cmd.into(),
+        };
+        let rows = vec![
+            mk("node /Users/x/bin/codex exec -C /tmp/wt -m gpt-5.3"), // real codex
+            mk("/bin/zsh -c 'grep codex exec results/'"),             // shell merely mentioning it
+            mk("grep -E codex exec|claude -p|monogram index"),        // a search tool
+            mk("monogram index . --ext zig,cpp"),                     // real index
+            mk("claude -p --model haiku"),                            // real claude
+            mk("agy --print --dangerously-skip-permissions"),         // real agy
+        ];
+        let (_runs, index, claude, codex, agy) = active_counts(&rows);
+        assert_eq!(
+            (index, claude, codex, agy),
+            (1, 1, 1, 1),
+            "count only real solver processes, not shells/greps that mention the strings"
+        );
+    }
+
+    #[test]
+    fn dead_run_pid_flags_stale_marker_from_killed_run() {
+        let dir = std::env::temp_dir().join(format!("monobench-dead-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // no marker ⇒ not a crash case
+        assert!(dead_run_pid(&dir, "r").is_none());
+        // marker with a live pid (ourselves) ⇒ still running, not crashed
+        std::fs::write(
+            dir.join("r.running"),
+            format!("pid={} tool=monogram\n", std::process::id()),
+        )
+        .unwrap();
+        assert!(dead_run_pid(&dir, "r").is_none());
+        // marker with a dead pid ⇒ crashed (RAII never ran)
+        std::fs::write(
+            dir.join("r.running"),
+            "pid=999999999 tool=monogram cli=codex\n",
+        )
+        .unwrap();
+        assert_eq!(dead_run_pid(&dir, "r"), Some(999999999));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn live_output_age_reads_freshest_streaming_log() {
+        let dir = std::env::temp_dir().join(format!("monobench-idle-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // no logs yet ⇒ None (run hasn't produced output)
+        assert!(live_output_age(&dir, "r").is_none());
+        std::fs::write(dir.join("r.err"), "stream\n").unwrap();
+        // a just-written log ⇒ a small age (freshest output)
+        assert!(live_output_age(&dir, "r").unwrap() < 5);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn matrix_state_round_trips_live_and_self_heals_stale() {
+        let root = std::env::temp_dir().join(format!("monobench-mstate-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        // A live matrix (our own pid) round-trips with id + cli/model in the line.
+        write_matrix_state(
+            &root,
+            std::process::id(),
+            "inst-x",
+            5,
+            2,
+            "codex",
+            "gpt-5.3",
+        );
+        let got = read_matrix_state(&root).expect("live state should read back");
+        assert_eq!(got.0, "inst-x");
+        assert!(got.1.contains("inst-x") && got.1.contains("codex/gpt-5.3"));
+        // A stale state (dead pid) returns None and self-clears the file.
+        std::fs::write(
+            matrix_state_path(&root),
+            serde_json::json!({"pid": 999_999_999u64, "id": "inst-x"}).to_string(),
+        )
+        .unwrap();
+        assert!(read_matrix_state(&root).is_none());
+        assert!(
+            !matrix_state_path(&root).exists(),
+            "stale state must self-clear"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn parse_duration_secs_handles_units_and_bare_seconds() {
+        assert_eq!(parse_duration_secs("9h"), Some(9 * 3600));
+        assert_eq!(parse_duration_secs("30m"), Some(1800));
+        assert_eq!(parse_duration_secs("2d"), Some(2 * 86400));
+        assert_eq!(parse_duration_secs("45s"), Some(45));
+        assert_eq!(parse_duration_secs("3600"), Some(3600)); // bare = seconds
+        assert_eq!(parse_duration_secs(" 9h "), Some(9 * 3600)); // trims
+        assert_eq!(parse_duration_secs("h"), None); // no number
+        assert_eq!(parse_duration_secs("abc"), None);
+        assert_eq!(parse_duration_secs(""), None);
+    }
+
+    #[test]
+    fn run_start_ms_reads_timestamped_label_only() {
+        // Timestamped label: the trailing -t<epoch_ms> is the run's own start time.
+        assert_eq!(
+            run_start_ms("monogram-codex-gpt-5.3-codex-high-r1-t1779639626850"),
+            Some(1779639626850)
+        );
+        // Legacy label with no -t suffix ⇒ None (caller falls back to file mtime).
+        assert_eq!(run_start_ms("baseline-claude-opus-4.1-high-r2"), None);
+        // A -t that is not all-digits is not a timestamp.
+        assert_eq!(run_start_ms("baseline-claude-test-r1"), None);
+    }
+
+    #[test]
+    fn run_since_keeps_recent_label_drops_old_one() {
+        // Label-based path is pure (no filesystem needed when -t<ms> is present).
+        let root = std::env::temp_dir();
+        let recent = "monogram-codex-gpt-5.3-high-r1-t2000000000000"; // ~2033, far future
+        let ancient = "monogram-codex-gpt-5.3-high-r1-t1000000000000"; // ~2001
+        assert!(run_since(&root, "noinst", recent, 1_500_000_000));
+        assert!(!run_since(&root, "noinst", ancient, 1_500_000_000));
+    }
 
     #[test]
     fn infers_root_from_result_artifact_path_in_process_command() {

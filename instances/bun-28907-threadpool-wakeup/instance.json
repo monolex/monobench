@@ -7,33 +7,55 @@
   "languages": [
     "zig"
   ],
-  "category": "lost-wakeup race (ThreadPool.notify)",
-  "crash_site": "TODO — where the crash is OBSERVED (must be a DIFFERENT fn than the cause)",
+  "category": "lost-wakeup memory-ordering race (ThreadPool.notify, aarch64)",
+  "crash_site": "No crash — a hang. Sporadic ~90s CI timeout / deadlock: a task sits in run_queue, every worker is parked on idle_event, and notified=false. The hang is observed at the caller awaiting the task, with no faulting instruction; only on aarch64.",
   "buggy_files_to_verify": [
     "src/threading/ThreadPool.zig"
   ],
   "ground_truth": {
     "root_cause_file": "src/threading/ThreadPool.zig",
-    "root_cause_fn": "TODO",
-    "decoy_fn": "TODO — adjacent plausible-but-wrong fn (often the crash site itself)",
+    "root_cause_fn": "ThreadPool.notify",
+    "decoy_fn": "the worker park/wait loop (idle_event wait + acquire-CAS clearing notified) and the run_queue push — these look like where the wakeup is lost but are CORRECT; the bug is the relaxed load in notify() on the producer side, a weak-memory-model ordering defect.",
     "fix_pr": 28907,
     "fix_commit": "770893d28ff9",
-    "fix_summary": "TODO — see ground_truth.md"
+    "fix_summary": "ThreadPool.notify() read sync.notified with a relaxed .monotonic load on its fast path. On aarch64's weak memory model this races the worker's acquire-CAS clear of notified plus its relaxed task-queue load: the producer sees a stale notified=true and skips waking a worker, while the worker sees a stale empty queue and parks — stranding a queued task with all workers idle and notified=false (lost wakeup). Fix: replace the relaxed load with self.sync.fetchOr(.{}, .release) so notify() participates in release ordering and observes a coherent notified/queue state."
   },
   "grading": {
     "full_must_name": [
-      "TODO"
+      "notify",
+      "ThreadPool.notify"
     ],
     "mechanism_keywords": [
-      "TODO"
+      "lost wakeup",
+      "missed wakeup",
+      "memory ordering",
+      "monotonic",
+      "relaxed load",
+      "release",
+      "acquire",
+      "fetchOr",
+      "atomic",
+      "aarch64",
+      "ARM64",
+      "weak memory model",
+      "race",
+      "notified",
+      "parked",
+      "stranded",
+      "deadlock"
     ],
     "decoy_markers": [
-      "TODO"
+      "idle_event",
+      "worker park loop",
+      "wait()",
+      "run_queue push",
+      "acquire-CAS in the worker",
+      "spurious wakeup"
     ]
   },
   "admission": {
-    "note": "PROVISIONAL scaffold. Author TODO before running: hide the API in symptom.md, verify crash-fn≠cause-fn, fill grading keys, run the thin arm.",
+    "note": "monogram+haiku vs baseline+haiku discrimination. HARD: no crash, just an intermittent aarch64-only hang; the lost wakeup LOOKS like a worker-side wait bug, but the cause is one relaxed atomic load in the producer's notify() (a C11/ARM64 ordering defect). Authored from PR #28907 fix diff (monotonic load -> fetchOr(.release)).",
     "baseline_full_hit_rate_max": 0.5
   },
-  "provenance": "https://github.com/oven-sh/bun/pull/28907 — threading: fix lost-wakeup race in ThreadPool.notify() on aarch64 (merged 2026-04-08); base 1b009ee4bd1a = merge first-parent."
+  "provenance": "https://github.com/oven-sh/bun/pull/28907 — threading: fix lost-wakeup race in ThreadPool.notify() on aarch64 (merged 2026-04-08); fix commit 770893d28ff9; base 1b009ee4bd1a. Root cause + fix extracted from the commit diff (relaxed .monotonic load -> fetchOr(.{}, .release) in notify())."
 }

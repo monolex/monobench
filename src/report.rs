@@ -20,6 +20,7 @@ fn sub(t: &str, w: usize) {
 fn prow(
     label_w: usize,
     lbl: &str,
+    start: &str,
     g: &str,
     cost: &str,
     tm: &str,
@@ -27,14 +28,23 @@ fn prow(
     mono: &str,
 ) -> String {
     format!(
-        "  {} {} {} {} {} {}",
+        "  {} {} {} {} {} {} {}",
         pad_end_fit(lbl, label_w),
+        pad_start_fit(start, 12),
         pad_end_fit(g, 9),
         pad_start_fit(cost, 7),
         pad_start_fit(tm, 6),
         pad_start_fit(calls, 6),
         pad_start_fit(mono, 5)
     )
+}
+
+/// UTC start time for a run label ("MM-DD HH:MMZ"); "—" for legacy labels with no embedded time.
+fn start_utc(label: &str) -> String {
+    match label_start_ms(label) {
+        Some(ms) => fmt_utc_ms(ms),
+        None => "—".into(),
+    }
 }
 fn arow(
     arm_w: usize,
@@ -85,9 +95,9 @@ fn report_dims(runs: &[&RunStats]) -> (usize, usize, usize) {
         let a = parse_arm(&r.label);
         max_arm = max_arm.max(visible_len(&a.tool));
     }
-    let label_w = max_run.max(28).min(MAX_W - 40);
+    let label_w = max_run.max(28).min(MAX_W - 53);
     let arm_w = max_arm.max(20).min(MAX_W - 59);
-    let width = MIN_W.max(label_w + 40).max(arm_w + 59).min(MAX_W);
+    let width = MIN_W.max(label_w + 53).max(arm_w + 59).min(MAX_W);
     (width, label_w, arm_w)
 }
 
@@ -140,7 +150,12 @@ pub fn report(root: &Path, id: &str, runs: &[RunStats]) {
                 env_name(&a.cli, &a.model, &a.effort) == *env
             })
             .collect();
-        rows.sort_by(|a, b| a.label.cmp(&b.label));
+        rows.sort_by(|a, b| {
+            label_start_ms(&a.label)
+                .unwrap_or(0)
+                .cmp(&label_start_ms(&b.label).unwrap_or(0))
+                .then_with(|| a.label.cmp(&b.label))
+        });
         sub(&format!("{}  ({})", env.to_uppercase(), rows.len()), width);
         println!(
             "{}",
@@ -149,6 +164,7 @@ pub fn report(root: &Path, id: &str, runs: &[RunStats]) {
                 &prow(
                     run_label_w,
                     "run",
+                    "started",
                     "grade",
                     "cost$",
                     "time",
@@ -166,6 +182,7 @@ pub fn report(root: &Path, id: &str, runs: &[RunStats]) {
             let mut row = prow(
                 run_label_w,
                 &r.label,
+                &start_utc(&r.label),
                 &r.grade,
                 &if r.cost_available {
                     format!("${:.2}", r.cost)
@@ -315,7 +332,12 @@ pub fn report(root: &Path, id: &str, runs: &[RunStats]) {
     if !fail.is_empty() {
         major("FAILURES & INCOMPLETE  (excluded from medians)", width);
         let mut fs = fail.clone();
-        fs.sort_by(|a, b| a.label.cmp(&b.label));
+        fs.sort_by(|a, b| {
+            label_start_ms(&a.label)
+                .unwrap_or(0)
+                .cmp(&label_start_ms(&b.label).unwrap_or(0))
+                .then_with(|| a.label.cmp(&b.label))
+        });
         for r in fs {
             let why = match r.grade.as_str() {
                 "FORFEIT" => "could not index repo (OOM)",
@@ -328,8 +350,9 @@ pub fn report(root: &Path, id: &str, runs: &[RunStats]) {
                 c(
                     arm_code(&tool),
                     &format!(
-                        "  {} {}",
+                        "  {} {} {}",
                         pad_end_fit(&r.label, run_label_w),
+                        pad_start_fit(&start_utc(&r.label), 12),
                         pad_end_fit(&r.grade, 10)
                     )
                 ),
@@ -537,4 +560,163 @@ pub fn summary(insts: &[(String, Vec<RunStats>)]) {
             )
         );
     }
+}
+
+/// Short fixed-width grade label for the `column` table header.
+fn short_grade(g: &str) -> &str {
+    match g {
+        "NAME_ONLY" => "NAME",
+        "INVALID" => "INVL",
+        "NO_RESULT" => "NORS",
+        "FORFEIT" => "FRFT",
+        x => x,
+    }
+}
+
+/// One arm's verified grade column across every instance — the judged detail behind `summary`.
+/// Disk-truth via the same gradeable gather as `report` (answer-less crashes are excluded, so
+/// `n` here is answered runs; the FULL/MISS/DECOY/NAME_ONLY/INVALID split + review coverage are
+/// exactly the hand tally this replaces). `arm` is a full arm name, e.g.
+/// `baseline-codex-gpt-5.4-mini-low`.
+pub fn column(arm_query: &str, insts: &[(String, Vec<RunStats>)]) {
+    let order = [
+        "FULL",
+        "NAME_ONLY",
+        "DECOY",
+        "MISS",
+        "INVALID",
+        "NO_RESULT",
+        "FORFEIT",
+    ];
+
+    // single pass: per-instance counts per grade, plus n and judged
+    let mut per: Vec<(String, [usize; 7], usize, usize)> = vec![];
+    let mut tot = [0usize; 7];
+    let (mut tn, mut tjudged) = (0usize, 0usize);
+    let mut arm_tool = String::new();
+    for (id, runs) in insts {
+        let mut cs = [0usize; 7];
+        let (mut n, mut judged) = (0usize, 0usize);
+        for r in runs {
+            let a = parse_arm(&r.label);
+            if a.arm != arm_query {
+                continue;
+            }
+            n += 1;
+            if r.final_checked {
+                judged += 1;
+            }
+            if arm_tool.is_empty() {
+                arm_tool = a.tool.clone();
+            }
+            if let Some(i) = order.iter().position(|g| *g == r.grade) {
+                cs[i] += 1;
+                tot[i] += 1;
+            }
+        }
+        if n > 0 {
+            per.push((id.clone(), cs, n, judged));
+            tn += n;
+            tjudged += judged;
+        }
+    }
+
+    let heavy = "═".repeat(MIN_W);
+    println!("\n{}", c(HEAD, &heavy));
+    println!(
+        "{}",
+        c(
+            HEAD,
+            &format!("COLUMN  ·  {arm_query}  ·  verified grade × instance")
+        )
+    );
+    println!("{}", c(HEAD, &heavy));
+
+    if tn == 0 {
+        println!("(no gradeable runs match arm '{arm_query}')");
+        let mut arms: Vec<String> = vec![];
+        for (_, runs) in insts {
+            for r in runs {
+                let a = parse_arm(&r.label).arm;
+                if !arms.contains(&a) {
+                    arms.push(a);
+                }
+            }
+        }
+        arms.sort();
+        if !arms.is_empty() {
+            println!("  known arms:");
+            for a in &arms {
+                println!("    {a}");
+            }
+        }
+        println!("\n[NEXT]");
+        println!("  monobench summary                     # all arms × instance leaderboard");
+        return;
+    }
+
+    let cols: Vec<usize> = (0..order.len()).filter(|&i| tot[i] > 0).collect();
+    let mut hdr = format!("  {}", pad_end("instance", 30));
+    for &i in &cols {
+        hdr.push_str(&format!(" {}", pad_start(short_grade(order[i]), 5)));
+    }
+    hdr.push_str(&format!(
+        " {} {}",
+        pad_start("n", 3),
+        pad_start("judged", 7)
+    ));
+    println!("{}", c(DIM, &hdr));
+
+    for (id, cs, n, judged) in &per {
+        let mut row = format!(
+            "  {}",
+            pad_end(&id.chars().take(30).collect::<String>(), 30)
+        );
+        for &i in &cols {
+            let v = cs[i];
+            row.push_str(&format!(
+                " {}",
+                pad_start(&(if v == 0 { ".".into() } else { v.to_string() }), 5)
+            ));
+        }
+        row.push_str(&format!(
+            " {} {}",
+            pad_start(&n.to_string(), 3),
+            pad_start(&format!("{judged}/{n}"), 7)
+        ));
+        println!("{}", c(arm_code(&arm_tool), &row));
+    }
+
+    println!("  {}", c(DIM, &"─".repeat(MIN_W - 2)));
+    let mut trow = format!("  {}", pad_end("TOTAL", 30));
+    for &i in &cols {
+        trow.push_str(&format!(" {}", pad_start(&tot[i].to_string(), 5)));
+    }
+    trow.push_str(&format!(
+        " {} {}",
+        pad_start(&tn.to_string(), 3),
+        pad_start(&format!("{tjudged}/{tn}"), 7)
+    ));
+    println!("{}", c(HEAD, &trow));
+
+    let full = tot[0];
+    let failures = tot[4] + tot[5] + tot[6]; // INVALID + NO_RESULT + FORFEIT
+    let gradeable = tn - failures;
+    let pct = if gradeable > 0 {
+        full * 100 / gradeable
+    } else {
+        0
+    };
+    println!();
+    println!(
+        "  root-cause FULL hit-rate: {full}/{gradeable} = {pct}%   (failures excluded: {failures})"
+    );
+    println!(
+        "  review coverage: {tjudged}/{tn} judged · {} unreviewed   (answer-less crashes excluded; see `monobench integrity`)",
+        tn - tjudged
+    );
+    println!("\n[NEXT]");
+    println!("  monobench report <id>                 # all arms for one instance");
+    println!("  monobench judge <id> <run>            # re-judge one run in-context (you decide; --judge-model is just a provenance label)");
+    println!("  monobench summary                     # full arm × instance leaderboard");
 }

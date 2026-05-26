@@ -7,34 +7,52 @@
   "languages": [
     "zig"
   ],
-  "category": "lifetime UAF (DirectoryWatchStore)",
-  "crash_site": "TODO — where the crash is OBSERVED (must be a DIFFERENT fn than the cause)",
+  "category": "borrowed-pointer lifetime UAF (a freed graph key is still referenced by a watch dependency)",
+  "crash_site": "ASAN use-after-poison in DirectoryWatchStore HotReloadEvent.processFileList (src/bake/DevServer/DirectoryWatchStore.zig ~line 106): a directory-watch file event dereferences a Dep.source_file_path that points to an already-freed key string (via bun.path.dirname / mem.lastIndexOfScalar). That reader is correct; it was handed a dangling pointer.",
   "buggy_files_to_verify": [
-    "src/bake/DevServer/DirectoryWatchStore.zig",
-    "src/bake/DevServer/IncrementalGraph.zig"
+    "src/bake/DevServer/IncrementalGraph.zig",
+    "src/bake/DevServer/DirectoryWatchStore.zig"
   ],
   "ground_truth": {
-    "root_cause_file": "src/bake/DevServer/DirectoryWatchStore.zig",
-    "root_cause_fn": "TODO",
-    "decoy_fn": "TODO — adjacent plausible-but-wrong fn (often the crash site itself)",
+    "root_cause_file": "src/bake/DevServer/IncrementalGraph.zig",
+    "root_cause_fn": "IncrementalGraph.disconnectAndDeleteFile",
+    "decoy_fn": "DirectoryWatchStore HotReloadEvent.processFileList (the crash site — correct; it only reads the dangling source_file_path). Also the watch-event hashing / dirname path. The cause is the unconditional key free in disconnectAndDeleteFile while a watcher Dep still borrows that pointer.",
     "fix_pr": 29951,
     "fix_commit": "aa90c281c613",
-    "fix_summary": "TODO — see ground_truth.md"
+    "fix_summary": "IncrementalGraph.disconnectAndDeleteFile() frees a file's key string (g.allocator().free(keys[file_index])) while DirectoryWatchStore.Dep.source_file_path still borrows that exact pointer. When a 'use client' boundary is demoted, the client graph disconnects/deletes the file and frees the key; a later directory-watch event then dereferences the dangling source_file_path. Fix: add DirectoryWatchStore.removeDependenciesForFile() (scans watchers and drops Deps whose source_file_path matches the file) and call it before the free in disconnectAndDeleteFile()."
   },
   "grading": {
     "full_must_name": [
-      "TODO"
+      "disconnectAndDeleteFile",
+      "removeDependenciesForFile"
     ],
     "mechanism_keywords": [
-      "TODO"
+      "use-after-free",
+      "UAF",
+      "borrowed pointer",
+      "freed key",
+      "key string",
+      "source_file_path",
+      "demoted",
+      "use client",
+      "watcher",
+      "dependency",
+      "dangling",
+      "free before cleanup",
+      "lifetime"
     ],
     "decoy_markers": [
-      "TODO"
+      "processFileList",
+      "HotReloadEvent",
+      "the watch-event crash site",
+      "dirname",
+      "lastIndexOfScalar",
+      "Dep storage"
     ]
   },
   "admission": {
-    "note": "PROVISIONAL scaffold. Author TODO before running: hide the API in symptom.md, verify crash-fn≠cause-fn, fill grading keys, run the thin arm.",
+    "note": "monogram+haiku vs baseline+haiku discrimination. HARD: ASAN crashes in the directory-watch event reader, but the cause is a key-string free two files away in IncrementalGraph.disconnectAndDeleteFile() that a DirectoryWatchStore.Dep still borrows by pointer identity. Live decoy = the correct reader at the crash site. Authored from PR #29951 fix diff (new removeDependenciesForFile() called before the free). NOTE: scaffold had root_cause_file=DirectoryWatchStore.zig (crash site / where the fix added cleanup) — corrected to IncrementalGraph.zig (the free).",
     "baseline_full_hit_rate_max": 0.5
   },
-  "provenance": "https://github.com/oven-sh/bun/pull/29951 — bake: fix use-after-free in DirectoryWatchStore when a client component boundary is demoted (merged 2026-04-29); base aa3f9803a8c6 = merge first-parent."
+  "provenance": "https://github.com/oven-sh/bun/pull/29951 — bake: fix use-after-free in DirectoryWatchStore when a client component boundary is demoted (merged 2026-04-29); fix commit aa90c281c613; base aa3f9803a8c6. Root cause + fix extracted from the commit diff (disconnectAndDeleteFile frees borrowed key; removeDependenciesForFile added)."
 }

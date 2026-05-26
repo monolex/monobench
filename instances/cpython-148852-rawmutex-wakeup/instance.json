@@ -7,35 +7,50 @@
   "languages": [
     "c"
   ],
-  "category": "mutex UAF on spurious semaphore wakeup (_PyRawMutex)",
-  "crash_site": "TODO — where the crash is OBSERVED (must be a DIFFERENT fn than the cause)",
+  "category": "lock/semaphore wakeup race use-after-free (_PyRawMutex stack semaphore freed before wakeup completes)",
+  "crash_site": "Fatal error / use-after-free in the semaphore wakeup: the unlocking thread calls _PySemaphore_Wakeup() on a waiter's semaphore that the waiter already destroyed. Surfaces as a crash inside the semaphore primitive touching freed (stack-allocated) memory, under raw-mutex contention with interrupts.",
   "buggy_files_to_verify": [
-    "Misc/NEWS.d/next/Core_and_Builtins/2026-04-21-14-36-44.gh-issue-148820.XhOGhA.rst",
     "Python/lock.c",
     "Python/parking_lot.c"
   ],
   "ground_truth": {
-    "root_cause_file": "Misc/NEWS.d/next/Core_and_Builtins/2026-04-21-14-36-44.gh-issue-148820.XhOGhA.rst",
-    "root_cause_fn": "TODO",
-    "decoy_fn": "TODO — adjacent plausible-but-wrong fn (often the crash site itself)",
+    "root_cause_file": "Python/lock.c",
+    "root_cause_fn": "_PyRawMutex_UnlockSlow",
+    "decoy_fn": "_PySemaphore_Wakeup / _PySemaphore_Wait / parking_lot primitives (they are correct); the CAS that removes the waiter from the list. The fix actually edits _PyRawMutex_LockSlow (the waiter side), but the unsafe pattern originates in _PyRawMutex_UnlockSlow's wakeup-without-handshake.",
     "fix_pr": 148852,
     "fix_commit": "ad3c5b7958b8",
-    "fix_summary": "TODO — see ground_truth.md"
+    "fix_summary": "_PyRawMutex_UnlockSlow CAS-removes a waiter then calls _PySemaphore_Wakeup() with no handshake. If that waiter's _PySemaphore_Wait() returned Py_PARK_INTR (interrupted), the waiter destroys its stack-allocated semaphore before the unlocker's wakeup runs -> use-after-free / fatal error. Fix: _PyRawMutex_LockSlow now loops until _PySemaphore_Wait() returns Py_PARK_OK (it must observe a real wakeup, not exit on INTR while a wakeup may still be pending against its semaphore)."
   },
   "grading": {
     "full_must_name": [
-      "TODO"
+      "_PyRawMutex_UnlockSlow",
+      "_PyRawMutex_LockSlow"
     ],
     "mechanism_keywords": [
-      "TODO"
+      "use-after-free",
+      "UAF",
+      "wakeup",
+      "semaphore",
+      "stack-allocated",
+      "Py_PARK_INTR",
+      "Py_PARK_OK",
+      "handshake",
+      "race",
+      "destroy",
+      "waiter",
+      "unlock",
+      "interrupt"
     ],
     "decoy_markers": [
-      "TODO"
+      "_PySemaphore_Wakeup",
+      "_PySemaphore_Wait",
+      "parking_lot",
+      "the CAS waiter removal"
     ]
   },
   "admission": {
-    "note": "PROVISIONAL scaffold. Author TODO before running: hide the API in symptom.md, verify crash-fn≠cause-fn, fill grading keys, run the thin arm.",
+    "note": "monogram+haiku vs baseline+haiku discrimination. HARD: crash is in a correct semaphore primitive touching a freed stack semaphore; the cause is the raw-mutex unlock waking a waiter that may already be gone on Py_PARK_INTR. Authored from PR #148852 fix diff (_PyRawMutex_LockSlow loops to Py_PARK_OK). NOTE: scaffold root_cause_file was the Misc/NEWS.d changelog .rst — corrected to Python/lock.c.",
     "baseline_full_hit_rate_max": 0.5
   },
-  "provenance": "https://github.com/python/cpython/pull/148852 — gh-148820: Fix _PyRawMutex use-after-free on spurious semaphore wakeup (merged 2026-04-22); base 59b41c8c3ba3 = merge first-parent."
+  "provenance": "https://github.com/python/cpython/pull/148852 — gh-148820 _PyRawMutex UAF on spurious semaphore wakeup (merged 2026-04-22); fix commit ad3c5b7958b8; base 59b41c8c3ba3. Root cause + fix from the commit diff (_PyRawMutex_LockSlow loop until Py_PARK_OK; unsafe wakeup in _PyRawMutex_UnlockSlow)."
 }

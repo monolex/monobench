@@ -8,33 +8,50 @@
     "c++",
     "js"
   ],
-  "category": "conditional UAF (zlib reset during write)",
-  "crash_site": "TODO — where the crash is OBSERVED (must be a DIFFERENT fn than the cause)",
+  "category": "missing-guard use-after-free (reset frees the compression context while an async write is in flight)",
+  "crash_site": "SIGSEGV / use-after-free on a libuv threadpool worker thread that is mid-write (deflate/inflate) when the compression context it is using is freed/reinitialized by a concurrent reset(). The threadpool work is correct; reset() pulled the memory out from under it.",
   "buggy_files_to_verify": [
     "src/node_zlib.cc"
   ],
   "ground_truth": {
     "root_cause_file": "src/node_zlib.cc",
-    "root_cause_fn": "TODO",
-    "decoy_fn": "TODO — adjacent plausible-but-wrong fn (often the crash site itself)",
+    "root_cause_fn": "CompressionStream::Reset",
+    "decoy_fn": "the threadpool work (DoThreadPoolWork) and Write — correct; Close() (which already HAS the write_in_progress_ guard, so it looks like the model to copy, not the bug). The bug is Reset() missing that guard.",
     "fix_pr": 62325,
     "fix_commit": "53bcd114b100",
-    "fix_summary": "TODO — see ground_truth.md"
+    "fix_summary": "CompressionStream::Reset() reinitialized/freed the zlib stream internals WITHOUT checking write_in_progress_, unlike Close() and Write() which guard on it. Calling reset() while an async write was dispatched to the libuv threadpool freed the compression context the worker thread was still reading/writing -> use-after-free. Fix: add the same write_in_progress_ guard at the top of Reset() (throw 'Cannot reset zlib stream while a write is in progress' and return) so a reset cannot race an in-flight write."
   },
   "grading": {
     "full_must_name": [
-      "TODO"
+      "Reset",
+      "CompressionStream::Reset",
+      "write_in_progress_"
     ],
     "mechanism_keywords": [
-      "TODO"
+      "use-after-free",
+      "UAF",
+      "reset",
+      "write_in_progress",
+      "threadpool",
+      "worker thread",
+      "pending write",
+      "in progress",
+      "guard",
+      "concurrent",
+      "freed",
+      "compression context",
+      "async"
     ],
     "decoy_markers": [
-      "TODO"
+      "DoThreadPoolWork",
+      "Write",
+      "Close",
+      "the worker thread crash site"
     ]
   },
   "admission": {
-    "note": "PROVISIONAL scaffold. Author TODO before running: hide the API in symptom.md, verify crash-fn≠cause-fn, fill grading keys, run the thin arm.",
+    "note": "monogram+haiku vs baseline+haiku discrimination. HARD: crash is on a threadpool worker mid-write, but the cause is reset() lacking the write_in_progress_ guard that Close()/Write() have. Live decoy = the correct worker work, or Close() (which has the guard). Authored from PR #62325 fix diff (add write_in_progress_ check to Reset()).",
     "baseline_full_hit_rate_max": 0.5
   },
-  "provenance": "https://github.com/nodejs/node/pull/62325 — zlib: fix use-after-free when reset() is called during write (merged 2026-03-26); base dbc74059503b = merge first-parent."
+  "provenance": "https://github.com/nodejs/node/pull/62325 — zlib: fix UAF when reset() is called during write (merged 2026-03-26); fix commit 53bcd114b100; base dbc74059503b. Root cause + fix from the commit diff (write_in_progress_ guard added to CompressionStream::Reset)."
 }

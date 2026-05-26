@@ -362,6 +362,9 @@ fn classify_patterns(sub: &str, cmd: &str, result: &str, has_json_next: bool) ->
     if result.contains("ui_lifecycle_free_site_redirect") {
         out.push("ui_lifecycle_free_site_redirect");
     }
+    if result.contains("context_signature_symbol_redirect") {
+        out.push("context_signature_symbol_redirect");
+    }
     if result.contains("fanout_preflight") {
         out.push("fanout_preflight");
     }

@@ -154,6 +154,46 @@ fn strip_run_suffix(s: &str) -> &str {
     s
 }
 
+/// Epoch-ms start time embedded in a timestamped run label or filename (`…-rN-t<ms>` optionally
+/// followed by any `.ext` such as `.jsonl` / `.answer.txt` / `.running`); None for legacy labels
+/// with no `-t` (caller may fall back to file mtime). Reads the digit run after the last `-t`, so
+/// non-numeric tails like `-test` are correctly rejected.
+pub fn label_start_ms(label: &str) -> Option<u64> {
+    let pos = label.rfind("-t")?;
+    let digits: String = label[pos + 2..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    (!digits.is_empty())
+        .then(|| digits.parse::<u64>().ok())
+        .flatten()
+}
+
+/// Compact UTC wall-clock for an epoch-ms start time: "MM-DD HH:MMZ" (minute resolution; the trailing
+/// Z marks UTC). Dependency-free — epoch is already UTC, so no timezone offset is needed.
+pub fn fmt_utc_ms(ms: u64) -> String {
+    let (_y, mo, d, hh, mm, _ss) = civil_from_epoch(ms / 1000);
+    format!("{mo:02}-{d:02} {hh:02}:{mm:02}Z")
+}
+
+/// Civil UTC date/time from epoch seconds (Howard Hinnant's algorithm) → (year, month, day, h, m, s).
+fn civil_from_epoch(secs: u64) -> (i64, u32, u32, u32, u32, u32) {
+    let days = (secs / 86400) as i64;
+    let rem = (secs % 86400) as u32;
+    let (hh, mm, ss) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+    let z = days + 719468;
+    let era = (if z >= 0 { z } else { z - 146096 }) / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if m <= 2 { y + 1 } else { y };
+    (year, m as u32, d as u32, hh, mm, ss)
+}
+
 pub fn full_arm_name(tool: &str, cli: &str, model: &str, effort: &str) -> String {
     let mut n = format!("{tool}-{cli}-{model}");
     if !effort.is_empty() {
@@ -263,9 +303,37 @@ pub fn default_cli_for_model(model: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        cmd_has_unquoted_pipe, cmd_has_word, cmd_word_pos, median_f, median_i, parse_arm,
-        word_in_command_position,
+        cmd_has_unquoted_pipe, cmd_has_word, cmd_word_pos, fmt_utc_ms, label_start_ms, median_f,
+        median_i, parse_arm, word_in_command_position,
     };
+
+    #[test]
+    fn label_start_ms_reads_timestamp_and_ignores_legacy() {
+        assert_eq!(
+            label_start_ms("monogram-claude-haiku-r1-t1779647883683"),
+            Some(1779647883683)
+        );
+        assert_eq!(
+            label_start_ms("monogram-claude-haiku-r1-t1779647883683.jsonl"),
+            Some(1779647883683)
+        );
+        assert_eq!(
+            label_start_ms("monogram-claude-haiku-r1-t1779647883683.answer.txt"),
+            Some(1779647883683)
+        );
+        assert_eq!(label_start_ms("baseline-haiku-r3"), None); // legacy, no -t
+        assert_eq!(label_start_ms("baseline-claude-test-r1"), None); // -test is not a timestamp
+    }
+
+    #[test]
+    fn fmt_utc_ms_renders_known_epochs_in_utc() {
+        // 1700000000s = 2023-11-14 22:13:20 UTC (well-known epoch).
+        assert_eq!(fmt_utc_ms(1_700_000_000_000), "11-14 22:13Z");
+        // epoch 0 = 1970-01-01 00:00:00 UTC.
+        assert_eq!(fmt_utc_ms(0), "01-01 00:00Z");
+        // A real run start time from the benchmark data (verified against `date -u`).
+        assert_eq!(fmt_utc_ms(1_779_647_883_683), "05-24 18:38Z");
+    }
 
     #[test]
     fn parses_legacy_model_labels() {

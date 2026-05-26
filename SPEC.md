@@ -6,6 +6,13 @@ symptom and the cause are linked *structurally* (call graph / data flow / owners
 Primary metric: **root-cause Hit-rate** and **tokens-per-correct-root-cause**. Secondary:
 tool-adoption (calls), tool-call count, wall-time, forfeits.
 
+monobench may be published as a general CLI, but its first priority is the Monolex recursive
+development loop. The benchmark must preserve evidence that helps monogram maker, NIIA research, and
+structural memory decide what to improve next: missing primitives, score terms, output budgets,
+`[NEXT]` guidance, telemetry parsers, and proof surfaces. Public-facing aggregate scores are useful
+only if this internal feedback remains trustworthy. The canonical loop is documented in
+`research/indexes/loop-flow.md`.
+
 ## 2. Instance admission criteria
 An instance is admissible only if ALL hold:
 
@@ -39,7 +46,7 @@ Each tool is a drop-in adapter `harness/tools/<name>/tool.json`:
   codegraph OOMs on Zig). Add a tool: `cp -r harness/tools/_TEMPLATE harness/tools/<name>`.
 
 Model invocation is split into two axes:
-- `--cli` — the CLI environment under test: `claude`, `codex`, `agy`, or `gemini`.
+- `--cli` — the CLI environment under test: `claude`, `codex`, `agy`, `gemini`, or `grok`.
 - `--model` — the full model name/alias recorded for that CLI environment.
 - `--via` — execution path: `direct` (default) or `niia` headless terminal.
 
@@ -53,10 +60,25 @@ identity or backward-compatible label parsing.
 Run one CLI+model per `monobench matrix` command, then repeat the command for the next model. Run
 **n ≥ 3** per arm for a median (these bugs have high variance).
 
-For agy, `--model` and `--effort` are requested labels unless agy exposes a stable enforcement
-interface. The meter records `requested_model`, `requested_effort`, `observed_model` when it can be
-parsed from agy logs, and `model_enforced:false` / `effort_enforced:false`. Agy cost/token fields are
-unavailable rather than zero-valued measurements.
+For agy, direct `--print` still has no `--model` flag. Monobench keeps the model axis honest by
+preflighting `~/.gemini/antigravity-cli/settings.json` and refusing a run when the configured model
+does not match `--model`. The meter records `requested_model`, `requested_effort`, `observed_model`
+when it can be parsed from agy logs, `model_enforced:true` only when the observed display label
+normalizes back to the requested label, and `effort_enforced:false`. Agy cost/token fields are
+unavailable rather than zero-valued measurements. Current agy labels include
+`gemini-3.5-flash-low` (`Gemini 3.5 Flash (Low)`) and `gemini-3.5-flash-medium`
+(`Gemini 3.5 Flash (Medium)`). For these agy Flash labels, Low/Medium is part of `--model`;
+leave `--effort` empty unless a separate experiment intentionally needs another effort axis.
+
+For grok (single model `grok-build`, OAuth/subscription auth), direct mode runs
+`grok -p <prompt> --cwd <clone> --model grok-build --output-format json`. grok exposes no per-turn
+token split and no cost, so `tokens`/`cost_usd` are null (never zero-valued measurements);
+`tokens_available` and `cost_available` are false. The meter instead records honest per-session metrics
+read from `~/.grok/sessions/<urlenc-cwd>/<sessionId>/signals.json` — `turns`, `tool_calls`,
+`context_tokens_used`, `session_duration_s`, `avg_ttft_ms` — located by the `sessionId` in grok's JSON
+envelope (robust to grok canonicalizing the cwd, e.g. `/tmp`→`/private/tmp`). `model_enforced` is true
+when `signals.primaryModelId` matches the requested model; `effort_enforced` is false (`grok-build` has
+`supports_reasoning_effort:false`).
 
 ## 5. Output contract & grading
 Agent must end with `ROOTCAUSE: <file>::<fn>` and `FIX: <one sentence>`. `monobench grade` gives an
