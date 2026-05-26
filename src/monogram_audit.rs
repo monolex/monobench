@@ -35,6 +35,15 @@ struct Oversized {
     signal: String,
 }
 
+struct MakerRecommendation {
+    signal: &'static str,
+    count: usize,
+    why: &'static str,
+    avoid: &'static str,
+    prefer: &'static str,
+    validate: &'static str,
+}
+
 fn monogram_sub(cmd: &str) -> Option<String> {
     let idx = cmd_word_pos(cmd, "monogram")?;
     let tok = cmd[idx + 8..].split_whitespace().next().unwrap_or("");
@@ -307,6 +316,9 @@ fn classify_patterns(sub: &str, cmd: &str, result: &str, has_json_next: bool) ->
     if sub == "search" && has_flag(cmd, "--explain") {
         out.push("search_explain");
     }
+    if sub == "region" && has_flag(cmd, "--score-debug") {
+        out.push("region_score_debug");
+    }
     if sub == "search" && has_flag(cmd, "--explain") && result.len() > 50_000 {
         out.push("oversized_search_explain");
     }
@@ -438,6 +450,111 @@ fn inc(map: &mut BTreeMap<String, usize>, key: impl Into<String>) {
     *map.entry(key.into()).or_default() += 1;
 }
 
+fn map_count(map: &BTreeMap<String, usize>, key: &str) -> usize {
+    map.get(key).copied().unwrap_or(0)
+}
+
+fn is_failure_grade(grade: &str) -> bool {
+    matches!(
+        grade,
+        "MISS" | "DECOY" | "NAME" | "NAME_ONLY" | "NO_RESULT" | "INVALID" | "FORFEIT"
+    )
+}
+
+fn maker_recommendations(
+    rows: &[Row],
+    oversized: &[Oversized],
+    total: &Row,
+) -> Vec<MakerRecommendation> {
+    let mut out = vec![];
+
+    let closed_but_wrong = rows
+        .iter()
+        .filter(|r| {
+            is_failure_grade(&r.grade)
+                && r.calls >= 10
+                && (map_count(&r.patterns, "region_first_next") > 0
+                    || map_count(&r.patterns, "success_pattern_next") > 0
+                    || map_count(&r.patterns, "region_score_debug") > 0)
+        })
+        .count();
+    if closed_but_wrong > 0 {
+        out.push(MakerRecommendation {
+            signal: "closed_candidate_space_but_wrong_root",
+            count: closed_but_wrong,
+            why: "failure runs used region/NEXT/score-debug steering but still ended on the wrong root",
+            avoid: "copying observed trace terms into generic classifiers, scoring branches, or fixed NEXT strings",
+            prefer: "scoreable evidence such as facet coverage, anchor coverage, graph reachability, coupling endpoints, and proof markers",
+            validate: "rerun the exposing failure, a prior FULL case, and an unrelated holdout; inspect trace shape, not grade alone",
+        });
+    }
+
+    let broad_output_pressure = map_count(&total.patterns, "context_code_ge_100")
+        + map_count(&total.patterns, "chain_depth_ge_3")
+        + map_count(&total.patterns, "chain_callers_depth_ge_3")
+        + map_count(&total.patterns, "search_explain_high_limit")
+        + map_count(&total.patterns, "oversized_context_bundle")
+        + map_count(&total.patterns, "oversized_search_explain")
+        + oversized.len();
+    if broad_output_pressure > 0 {
+        out.push(MakerRecommendation {
+            signal: "broad_output_or_fanout_loop",
+            count: broad_output_pressure,
+            why: "large context/search/chain shapes still appear and can keep the solver circling nearby evidence",
+            avoid: "raising raw limits or allowing full dumps as the default recovery path",
+            prefer: "budgeted preflight, staged depth, compact summaries, and region-first narrowing before expanded context",
+            validate: "compare output bytes, NEXT adherence, and root-cause cone width before and after the change",
+        });
+    }
+
+    let guarded_recovery = map_count(&total.kinds, "guarded_no_match");
+    if guarded_recovery > 0 {
+        out.push(MakerRecommendation {
+            signal: "guarded_no_match_recovery_pressure",
+            count: guarded_recovery,
+            why: "monogram avoided a dead no-match, but the recovery path still needs ranking and narrowing evidence",
+            avoid: "treating guarded recovery as success by itself",
+            prefer: "rewrite the recovery into region/query-facet candidates with explicit uncertainty and next proof steps",
+            validate: "trace whether the run moves from guarded recovery to a smaller verified candidate set",
+        });
+    }
+
+    let static_steering_review = rows
+        .iter()
+        .filter(|r| {
+            is_failure_grade(&r.grade)
+                && map_count(&r.patterns, "success_pattern_next") > 0
+                && map_count(&r.patterns, "ownership_verb_redirect") > 0
+        })
+        .count();
+    if static_steering_review > 0 {
+        out.push(MakerRecommendation {
+            signal: "source_promotion_review_required",
+            count: static_steering_review,
+            why: "failure traces show fixed success-pattern steering and ownership redirects in the same loop",
+            avoid: "promoting benchmark-observed names into source-level query guards, route selection, or canned commands",
+            prefer: "derive NEXT commands from current top-region evidence kinds, current-file facets, and measured broadness",
+            validate: "review source diffs for literal promotion, then rerun with at least one unrelated benchmark",
+        });
+    }
+
+    out
+}
+
+fn print_maker_recommendations(recs: &[MakerRecommendation]) {
+    if recs.is_empty() {
+        return;
+    }
+    println!("\nMAKER RECOMMENDATIONS");
+    for r in recs.iter().take(8) {
+        println!("  {}  count={}", r.signal, r.count);
+        println!("    why: {}", r.why);
+        println!("    avoid: {}", r.avoid);
+        println!("    prefer: {}", r.prefer);
+        println!("    validate: {}", r.validate);
+    }
+}
+
 pub fn audit(id: &str, files: &[String], stats: &[RunStats]) {
     let grades: HashMap<String, String> = stats
         .iter()
@@ -545,6 +662,8 @@ pub fn audit(id: &str, files: &[String], stats: &[RunStats]) {
     print_map("subcommands", &total.subs);
     print_map("patterns", &total.patterns);
     print_map("oversized-kinds", &oversized_kinds);
+    let recs = maker_recommendations(&rows, &oversized, &total);
+    print_maker_recommendations(&recs);
 
     rows.sort_by(|a, b| {
         b.issues
@@ -614,7 +733,8 @@ fn print_map(title: &str, map: &BTreeMap<String, usize>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{issue_kind, monogram_sub};
+    use super::{classify_patterns, issue_kind, maker_recommendations, monogram_sub, Row};
+    use std::collections::BTreeMap;
 
     #[test]
     fn monogram_redirection_probe_is_help_not_redirection_subcommand() {
@@ -633,5 +753,46 @@ mod tests {
             issue_kind("context", "exited 1 in 5ms:\nactual failure"),
             Some("nonzero_other")
         );
+    }
+
+    #[test]
+    fn region_score_debug_is_a_command_shape_pattern() {
+        let patterns = classify_patterns(
+            "region",
+            "monogram region \"ownership boundary\" -n 5 --score-debug",
+            "",
+            false,
+        );
+        assert!(patterns.contains(&"region_score_debug"));
+    }
+
+    #[test]
+    fn source_promotion_recommendation_requires_steering_shape_not_literals() {
+        let literal_only = Row {
+            label: "r1".into(),
+            grade: "MISS".into(),
+            calls: 20,
+            ..Row::default()
+        };
+        let total = Row::default();
+        let recs = maker_recommendations(&[literal_only], &[], &total);
+        assert!(!recs
+            .iter()
+            .any(|r| r.signal == "source_promotion_review_required"));
+
+        let mut patterns = BTreeMap::new();
+        patterns.insert("success_pattern_next".into(), 1);
+        patterns.insert("ownership_verb_redirect".into(), 1);
+        let steering_shape = Row {
+            label: "r2".into(),
+            grade: "MISS".into(),
+            calls: 20,
+            patterns,
+            ..Row::default()
+        };
+        let recs = maker_recommendations(&[steering_shape], &[], &total);
+        assert!(recs
+            .iter()
+            .any(|r| r.signal == "source_promotion_review_required"));
     }
 }

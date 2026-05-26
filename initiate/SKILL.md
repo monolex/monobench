@@ -41,7 +41,7 @@ tools ──→ run / matrix
 Example flows (the detailed way to use it):
 - Compare a tool vs baseline:   `run <id> baseline 1` → `run <id> monogram 1` → `report <id>`
 - Investigate a MISS:           `report <id>` → `evidence <id> <run> --pattern ROOTCAUSE` → `trace <id> <run>` → `export <id> <run>`
-- Diagnose monogram loop:       `monogram-audit <id>` → `evidence <id> --pattern 'region_first_next|score-debug|ROOTCAUSE'` → classify path-not-closed vs closed-but-uncalibrated
+- Diagnose monogram loop:       `monogram-audit <id>` → read `MAKER RECOMMENDATIONS` → `evidence <id> --pattern 'region_first_next|score-debug|ROOTCAUSE'` → classify path-not-closed vs closed-but-uncalibrated
 - Validate before counting:     `integrity <id>` → `inspect <id> <run>` → rerun if contaminated
 - Scan conclusions across runs: `evidence <id> --pattern ROOTCAUSE` (index) → `evidence <id> <run>` (drill in)
 - Watch live runs:              `matrix <id> …` → `watch --live` / `status <id> --live`
@@ -68,7 +68,8 @@ Example flows (the detailed way to use it):
    timeline, and `monobench export` when the full transcript should become reusable markdown evidence.
    After export, run `monomento index . --project`, then search/peek the run later with monomento.
    For Monolex tool development, turn repeated patterns into maker proposals rather than solver
-   hints; the canonical internal flow is `research/indexes/loop-flow.md`.
+   hints. `monogram-audit` surfaces maker recommendations for general score/proof/budget/NEXT
+   changes; the canonical internal flow is `research/indexes/loop-flow.md`.
 6. **Report** — `monobench report <id>` → per-arm FULL Hit-rate · median $ · median tokens · adoption.
 7. **Check final grades** — automatic grades are stage 1. For final benchmark truth, use
    `monobench judge <id> <run> --model <judge-model> --write`, have the orchestrating LLM or a human

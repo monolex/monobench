@@ -1,0 +1,29 @@
+{
+  "id": "dotnet-125293-gchandle-doublefree-race",
+  "title": "GCHandle double-free race in WinHttpRequestState dispose",
+  "repo": "https://github.com/dotnet/runtime",
+  "tag": "133f6a80839a",
+  "base_commit": "133f6a80839a",
+  "languages": ["csharp", "c++"],
+  "category": "race condition -> GCHandle double-free across the managed ↔ native (WinHTTP) boundary",
+  "crash_site": "intermittent crash / 'GCHandle was previously freed' / access violation during HttpClient request teardown over WinHTTP, surfacing in native WinHTTP callback handling, not at an obvious free site.",
+  "buggy_files_to_verify": ["src/libraries/System.Net.Http.WinHttpHandler/src/System/Net/Http/WinHttpRequestState.cs"],
+  "ground_truth": {
+    "root_cause_file": "src/libraries/System.Net.Http.WinHttpHandler/src/System/Net/Http/WinHttpRequestState.cs",
+    "root_cause_fn": "Dispose",
+    "decoy_fn": "the GCHandle field and its Free() call (looks like the bug) and the IDisposable finalizer. The defect is the non-atomic check-then-set of _disposed in Dispose, not the Free itself.",
+    "fix_pr": 125293,
+    "fix_commit": "28c5a4dcc838",
+    "fix_summary": "Dispose used `if (_disposed) return; _disposed = true;` with `_disposed` only volatile, not atomic. Two threads (request completion + cancellation) could both pass the check and both Free the GCHandle -> double free. Fix: make the disposed transition atomic (Interlocked) so exactly one caller frees the handle."
+  },
+  "grading": {
+    "full_must_name": ["Dispose"],
+    "mechanism_keywords": ["race", "double-free", "double free", "GCHandle", "non-atomic", "volatile", "_disposed", "Interlocked", "check-then-set", "TOCTOU", "concurrent"],
+    "decoy_markers": ["GCHandle.Free", "Free", "_disposed flag", "finalizer"]
+  },
+  "admission": {
+    "note": "Authored from PR #125293 body+diff. crash != cause: AV surfaces in native WinHTTP callback handling; cause is a non-atomic volatile check-then-set in WinHttpRequestState.Dispose letting two threads both Free the GCHandle. Decoy = the GCHandle.Free call. Single file -> watch contamination. C# managed handle lifetime <-> native WinHTTP. Run baseline first.",
+    "baseline_full_hit_rate_max": 0.5
+  },
+  "provenance": "https://github.com/dotnet/runtime/pull/125293 — Fix GCHandle double-free race in WinHttpRequestState; fix 28c5a4dcc838, base 133f6a80839a."
+}

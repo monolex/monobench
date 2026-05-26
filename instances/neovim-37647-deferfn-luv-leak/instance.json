@@ -1,0 +1,29 @@
+{
+  "id": "neovim-37647-deferfn-luv-leak",
+  "title": "deferred Lua callback leaks a libuv timer handle when scheduling fails at exit",
+  "repo": "https://github.com/neovim/neovim",
+  "tag": "0501c5fd0959",
+  "base_commit": "0501c5fd0959",
+  "languages": ["lua", "c"],
+  "category": "resource leak (libuv timer handle never closed; Lua stdlib ↔ C uv loop)",
+  "crash_site": "Neovim reports leaked libuv handles / does not shut down cleanly after a timer-based deferred Lua callback is registered shortly before exit. The leak report points at the uv loop, not at the registering code.",
+  "buggy_files_to_verify": ["runtime/lua/vim/_core/editor.lua", "src/nvim/lua/executor.c"],
+  "ground_truth": {
+    "root_cause_file": "runtime/lua/vim/_core/editor.lua",
+    "root_cause_fn": "defer_fn",
+    "decoy_fn": "vim.schedule (the C-backed scheduler in executor.c that can fail) and the uv timer creation. The defect is defer_fn not closing its timer when schedule fails.",
+    "fix_pr": 37647,
+    "fix_commit": "1906da52dbc9",
+    "fix_summary": "vim.defer_fn() creates a libuv timer and, on fire, calls vim.schedule(). If vim.schedule() fails (e.g. during shutdown), defer_fn never closed the timer -> leaked luv handle. Fix: make vim.schedule() return an error when scheduling fails, and make vim.defer_fn() close the timer when vim.schedule() failed."
+  },
+  "grading": {
+    "full_must_name": ["defer_fn"],
+    "mechanism_keywords": ["leak", "luv", "libuv", "timer", "handle", "vim.schedule", "schedule failed", "close", "uv_close", "shutdown", "defer_fn"],
+    "decoy_markers": ["vim.schedule", "executor.c", "uv timer creation"]
+  },
+  "admission": {
+    "note": "Authored from PR #37647 body+diff. crash != cause: the symptom is a leaked uv handle at exit; the cause is defer_fn (editor.lua) not closing its timer when the C-backed vim.schedule() fails. Decoy = vim.schedule. Resource-leak category (not a crash) -> moderate C5; valuable for Lua coverage. Lua stdlib <-> C uv loop. Run baseline first.",
+    "baseline_full_hit_rate_max": 0.5
+  },
+  "provenance": "https://github.com/neovim/neovim/pull/37647 (fixes #19727) — close vim.defer_fn() timer if vim.schedule() failed; fix 1906da52dbc9, base 0501c5fd0959."
+}

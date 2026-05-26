@@ -194,7 +194,9 @@ from generic proof terms by universal probe words plus DB-wide DF/IDF broad-term
 detection. If a query mixes symptom/API terms with ownership/refcount terms,
 regions that only satisfy genuinely broad proof terms are damped; corpus-specific
 symbols remain anchors unless the current index proves they are broad. Pure
-ownership queries keep the prior ranking.
+ownership queries keep the prior ranking. `--score-debug` must expose per-term
+`df`/`idf`, so future loop analysis can tune the threshold instead of adding
+named exceptions.
 
 The first smoke exposed a second scoring prerequisite: `-n` was also shrinking
 the internal search/raw/ref candidate pool, so `-n 5` could miss an anchor that

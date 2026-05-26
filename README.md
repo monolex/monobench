@@ -104,7 +104,7 @@ tools ──→ run / matrix
 |------|------|
 | compare a tool vs baseline | `run <id> baseline` → `run <id> monogram` → `report <id>` |
 | investigate a MISS | `report <id>` → `evidence <id> <run> --pattern ROOTCAUSE` → `trace <id> <run>` → `export <id> <run>` |
-| diagnose a monogram loop failure | `monogram-audit <id>` → `evidence <id> --pattern 'region_first_next|score-debug|ROOTCAUSE'` → classify path-not-closed vs closed-but-uncalibrated |
+| diagnose a monogram loop failure | `monogram-audit <id>` → read `MAKER RECOMMENDATIONS` → `evidence <id> --pattern 'region_first_next|score-debug|ROOTCAUSE'` → classify path-not-closed vs closed-but-uncalibrated |
 | validate before counting a run | `integrity <id>` → `inspect <id> <run>` → rerun if contaminated |
 | scan conclusions across runs | `evidence <id> --pattern ROOTCAUSE` (index) → `evidence <id> <run>` (drill in) |
 | watch live runs | `matrix <id> …` → `watch --live` / `status <id> --live` |
@@ -210,7 +210,9 @@ markers, output shaping, or NEXT.
 ## Tool-maker feedback
 
 Use `trace`, `adoption`, `evidence`, `export`, and `monogram-audit` to produce maker proposals, not
-solver hints. A good proposal says which general mechanism should change:
+solver hints. `monogram-audit` prints `MAKER RECOMMENDATIONS` when repeated command shapes suggest a
+general monogram change. Treat those as implementation directions to investigate, not benchmark
+answer hints. A good proposal says which general mechanism should change:
 
 ```text
 observed pattern: broad symbol drift after reaching the right neighborhood

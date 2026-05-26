@@ -1,0 +1,29 @@
+{
+  "id": "dotnet-124796-wmiinterop-keepalive",
+  "title": "premature-GC use-after-free: managed object passed to native WMI call is not kept alive",
+  "repo": "https://github.com/dotnet/runtime",
+  "tag": "0f125741186d",
+  "base_commit": "0f125741186d",
+  "languages": ["csharp", "c++"],
+  "category": "premature-GC use-after-free across the managed ↔ native (COM) boundary",
+  "crash_site": "Intermittent access violation / heap corruption inside an unmanaged COM interface call (IWbemClassObject) during object comparison and method-signature operations, only under GC pressure. The managed wrapper already pins its own instance across the call, so it looks correct.",
+  "buggy_files_to_verify": ["src/libraries/System.Management/src/System/Management/InteropClasses/WMIInterop.cs"],
+  "ground_truth": {
+    "root_cause_file": "src/libraries/System.Management/src/System/Management/InteropClasses/WMIInterop.cs",
+    "root_cause_fn": "CompareTo_",
+    "decoy_fn": "the existing GC.KeepAlive(this) at the end of each method (the receiver IS kept alive — looks complete). PutMethod_ has the identical bug. The IWbemClassObjectFreeThreaded finalizer is the plausible-but-wrong place to look.",
+    "fix_pr": 124796,
+    "fix_commit": "adc191279b42",
+    "fix_summary": "CompareTo_/PutMethod_ pass the IntPtr handle of their *argument* wrappers (pCompareTo; pInSignature/pOutSignature) into native WMI calls but only call GC.KeepAlive(this) — the argument wrappers could be collected mid-call (their finalizer freeing the COM object the native code still uses). Fix: add GC.KeepAlive(pCompareTo) in CompareTo_ and GC.KeepAlive(pInSignature)/GC.KeepAlive(pOutSignature) in PutMethod_ after the native call."
+  },
+  "grading": {
+    "full_must_name": ["CompareTo_", "PutMethod_", "GC.KeepAlive"],
+    "mechanism_keywords": ["use-after-free", "UAF", "premature", "garbage collect", "GC.KeepAlive", "KeepAlive", "IntPtr", "native", "COM", "IWbemClassObject", "argument", "not rooted", "collected", "finalizer"],
+    "decoy_markers": ["GC.KeepAlive(this)", "finalizer", "IWbemClassObjectFreeThreaded", "this"]
+  },
+  "admission": {
+    "note": "Authored from PR #124796 body+diff (PR notes the issue was surfaced by an LLM, 'Opus'). crash != cause: AV fires in native WMI; cause is a missing GC.KeepAlive on the *argument* object in CompareTo_/PutMethod_ — decoy is the present GC.KeepAlive(this). Defensive fix (author couldn't fully prove the race) -> grade ownership/lifetime correctness. Contamination LOW (obscure interop file). SINGLE FILE: if baseline FULL-solves by grepping WMIInterop.cs, down-weight. Cross-boundary: C# managed lifetime <-> native COM. Run baseline first.",
+    "baseline_full_hit_rate_max": 0.5
+  },
+  "provenance": "https://github.com/dotnet/runtime/pull/124796 — Add missing GC.KeepAlives to WMIInterop; fix commit adc191279b42, base 0f125741186d. Single-file. The C#↔native twin of node-56840 (premature-GC UAF). AI-surfaced (Opus) — viral hook, but obscure file keeps contamination low."
+}

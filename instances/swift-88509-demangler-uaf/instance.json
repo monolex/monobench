@@ -1,0 +1,29 @@
+{
+  "id": "swift-88509-demangler-uaf",
+  "title": "Demangler use-after-free: Words[] entries not saved across nested demangle calls",
+  "repo": "https://github.com/swiftlang/swift",
+  "tag": "4be700e13125",
+  "base_commit": "4be700e13125",
+  "languages": ["c++"],
+  "category": "use-after-free (saved state not preserved across re-entrant/nested demangling; Swift toolchain C++)",
+  "crash_site": "crash / heap-use-after-free in the Swift Demangler while demangling a symbol that triggers a nested demangle; a Words[] entry points at storage reused by the inner call.",
+  "buggy_files_to_verify": ["lib/Demangling/Demangler.cpp", "include/swift/Demangling/Demangler.h"],
+  "ground_truth": {
+    "root_cause_file": "lib/Demangling/Demangler.cpp",
+    "root_cause_fn": "Demangler::DemangleInitRAII",
+    "decoy_fn": "the nested demangle entry point and the NodeFactory storage where the stale pointer is read. The defect is DemangleInitRAII not saving/restoring the Words[] state across a nested demangle.",
+    "fix_pr": 88509,
+    "fix_commit": "d39d0feb25cd",
+    "fix_summary": "Words[] (substitution words) were not saved/restored when a demangle re-enters (nested demangle), so the inner demangling reused/overwrote storage the outer Words[] still referenced -> UAF. Fix: save and restore the Words state in DemangleInitRAII around nested demangles."
+  },
+  "grading": {
+    "full_must_name": ["Demangler::DemangleInitRAII", "DemangleInitRAII"],
+    "mechanism_keywords": ["use-after-free", "UAF", "Words", "nested", "demangle", "save", "restore", "re-enter", "reentrant", "NodeFactory", "stale"],
+    "decoy_markers": ["NodeFactory", "nested demangle entry", "Node"]
+  },
+  "admission": {
+    "note": "Authored from PR #88509 diff. crash != cause: crash reads a stale Words[] entry during/after a nested demangle; cause is DemangleInitRAII not saving/restoring Words across the nested call. NOTE: this is the Swift toolchain's C++ (lib/Demangling) -> exercises C++, NOT the Swift-language extractor; Swift-LANGUAGE coverage = vapor-2500 (.swift). Run baseline first.",
+    "baseline_full_hit_rate_max": 0.5
+  },
+  "provenance": "https://github.com/swiftlang/swift/pull/88509 — Fix use-after-free in Demangler caused by Words[] not saved across nested demangle calls; fix d39d0feb25cd, base 4be700e13125."
+}

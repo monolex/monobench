@@ -1,0 +1,29 @@
+{
+  "id": "numpy-31314-nditer-getitem-segfault",
+  "title": "nditer.multi_index setter segfaults when a Python __getitem__ raises",
+  "repo": "https://github.com/numpy/numpy",
+  "tag": "a9c745972cd7",
+  "base_commit": "a9c745972cd7",
+  "languages": ["python", "c"],
+  "category": "re-entrancy NULL-deref segfault across the Python ↔ C boundary (unchecked PySequence_GetItem)",
+  "crash_site": "interpreter segfault inside NumPy's C nditer code while assigning to nditer.multi_index using a Python object whose element access raises an exception.",
+  "buggy_files_to_verify": ["numpy/_core/src/multiarray/nditer_pywrap.c"],
+  "ground_truth": {
+    "root_cause_file": "numpy/_core/src/multiarray/nditer_pywrap.c",
+    "root_cause_fn": "npyiter_multi_index_set",
+    "decoy_fn": "the user's Python __getitem__ (it merely raises — not the bug) and the iterator-advance path. The defect is npyiter_multi_index_set not checking PySequence_GetItem for NULL when the call raised.",
+    "fix_pr": 31314,
+    "fix_commit": "fa6d67432de1",
+    "fix_summary": "npyiter_multi_index_set called PySequence_GetItem on the supplied index object and used the result without a NULL check; if the object's __getitem__ raises, PySequence_GetItem returns NULL and the C code dereferenced it -> segfault. Fix: add a NULL check after PySequence_GetItem and propagate the error."
+  },
+  "grading": {
+    "full_must_name": ["npyiter_multi_index_set"],
+    "mechanism_keywords": ["segfault", "NULL", "PySequence_GetItem", "__getitem__", "raises", "exception", "error path", "re-entran", "unchecked", "multi_index"],
+    "decoy_markers": ["__getitem__", "iterator advance", "npyiter_next"]
+  },
+  "admission": {
+    "note": "Authored from PR #31314 body+diff. crash != cause: the segfault is in the C nditer setter; the cause is a Python callback (__getitem__) raising, returning NULL from PySequence_GetItem, which npyiter_multi_index_set used unchecked. Decoy = the Python __getitem__ itself. Single file -> watch contamination. Python re-entrancy <-> C error handling. Run baseline first.",
+    "baseline_full_hit_rate_max": 0.5
+  },
+  "provenance": "https://github.com/numpy/numpy/pull/31314 — Fix segfault in nditer.multi_index when __getitem__ raises; fix fa6d67432de1, base a9c745972cd7."
+}

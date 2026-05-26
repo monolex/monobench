@@ -1,0 +1,29 @@
+{
+  "id": "netty-12036-unsafe-bytebuffer-uaf",
+  "title": "ByteBuffer from component iteration must keep unsafe native memory alive",
+  "repo": "https://github.com/netty/netty",
+  "tag": "5b0e0a9820f1",
+  "base_commit": "5b0e0a9820f1",
+  "languages": ["java", "c"],
+  "category": "use-after-free: native memory freed while a derived ByteBuffer still references it (Java ↔ native/Unsafe)",
+  "crash_site": "JVM SIGSEGV / corrupted data reading a java.nio.ByteBuffer obtained from a Buffer component via forEachReadable/forEachWritable. The ByteBuffer access is ordinary; the native memory behind it was already released.",
+  "buggy_files_to_verify": ["common/src/main/java/io/netty/util/internal/PlatformDependent.java", "buffer/src/main/java/io/netty/buffer/api/unsafe/UnsafeBuffer.java"],
+  "ground_truth": {
+    "root_cause_file": "common/src/main/java/io/netty/util/internal/PlatformDependent.java",
+    "root_cause_fn": "directBuffer",
+    "decoy_fn": "the ByteBuffer access site where it crashes, and ReadableComponent / UnsafeBuffer.readableBuffer which hand out the buffer. The graded defect is directBuffer creating a ByteBuffer over native memory with nothing keeping that memory alive.",
+    "fix_pr": 12036,
+    "fix_commit": "71d829a34236",
+    "fix_summary": "forEachReadable/forEachWritable on an UnsafeBuffer could hand out a java.nio.ByteBuffer backed by native memory; if that ByteBuffer was siphoned out of the iteration and outlived the UnsafeBuffer, nothing kept the UnsafeMemory alive -> UAF. Fix: PlatformDependent.directBuffer takes an attachment object (the owning UnsafeMemory) so GC keeps the native memory alive while the ByteBuffer is reachable; readableBuffer/writableBuffer pass it."
+  },
+  "grading": {
+    "full_must_name": ["directBuffer", "readableBuffer", "writableBuffer"],
+    "mechanism_keywords": ["use-after-free", "UAF", "native memory", "keep alive", "attachment", "forEachReadable", "Unsafe", "UnsafeMemory", "reachable", "freed", "Cleaner"],
+    "decoy_markers": ["ReadableComponent", "ByteBuffer access", "crash site"]
+  },
+  "admission": {
+    "note": "Authored from PR #12036 body+diff. crash != cause: SIGSEGV in plain ByteBuffer access; cause is directBuffer creating a ByteBuffer over native memory with no attachment to keep it alive once siphoned out of forEachReadable. MULTI-FILE (6 files) -> grading accepts directBuffer OR readableBuffer/writableBuffer + the keep-alive mechanism. Java <-> native Unsafe memory. Run baseline first.",
+    "baseline_full_hit_rate_max": 0.5
+  },
+  "provenance": "https://github.com/netty/netty/pull/12036 — ByteBuffer from component iteration must keep unsafe memory alive; fix 71d829a34236, base 5b0e0a9820f1."
+}

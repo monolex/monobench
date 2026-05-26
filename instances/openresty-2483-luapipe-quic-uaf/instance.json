@@ -1,0 +1,29 @@
+{
+  "id": "openresty-2483-luapipe-quic-uaf",
+  "title": "use-after-free in ngx.pipe when a QUIC connection closes and destroys the pool first",
+  "repo": "https://github.com/openresty/lua-nginx-module",
+  "tag": "a44c67f41876",
+  "base_commit": "a44c67f41876",
+  "languages": ["lua", "c"],
+  "category": "use-after-free (pool destroyed before pipe cleanup handlers run; Lua ngx.pipe ↔ C nginx pool)",
+  "crash_site": "nginx segfault in a pipe stdout-read cleanup handler (ngx_http_lua_pipe_proc_read_stdout_cleanup, src/ngx_http_lua_pipe.c), invoked during connection teardown. The cleanup runs against memory already freed with the connection's pool.",
+  "buggy_files_to_verify": ["src/ngx_http_lua_pipe.c"],
+  "ground_truth": {
+    "root_cause_file": "src/ngx_http_lua_pipe.c",
+    "root_cause_fn": "ngx_http_lua_ffi_pipe_proc_destroy",
+    "decoy_fn": "the *_cleanup handlers where it crashes — ngx_http_lua_pipe_proc_read_stdout_cleanup / _read_stderr_cleanup / _write_cleanup / _wait_cleanup. They are the crash sites; the defect is the destroy/close ordering relative to pool destruction.",
+    "fix_pr": 2483,
+    "fix_commit": "cac9cbc3b700",
+    "fix_summary": "On the QUIC connection-close path the connection pool is destroyed, running the pipe's pending cleanup handlers against already-freed data -> UAF. Fix: in ngx_http_lua_ffi_pipe_proc_destroy ensure the pipe's connections/cleanups are closed before pool destruction (add a helper that tears them down deterministically)."
+  },
+  "grading": {
+    "full_must_name": ["ngx_http_lua_ffi_pipe_proc_destroy"],
+    "mechanism_keywords": ["use-after-free", "UAF", "pool", "ngx_destroy_pool", "QUIC", "connection close", "cleanup", "ngx_http_lua_cleanup_pending_operation", "pipe", "ordering", "freed"],
+    "decoy_markers": ["ngx_http_lua_pipe_proc_read_stdout_cleanup", "read_stderr_cleanup", "write_cleanup", "wait_cleanup"]
+  },
+  "admission": {
+    "note": "Authored from PR #2483 body+gdb bt. crash != cause: gdb frame #0 is ngx_http_lua_pipe_proc_read_stdout_cleanup (a cleanup handler) run during pool destruction on QUIC close; the cause is the destroy/close ordering owned by ngx_http_lua_ffi_pipe_proc_destroy. Decoys = the four *_cleanup handlers. Lua ngx.pipe lifetime <-> C nginx pool. Run baseline first.",
+    "baseline_full_hit_rate_max": 0.5
+  },
+  "provenance": "https://github.com/openresty/lua-nginx-module/pull/2483 — prevent use-after-free crash in ngx_http_lua_pipe (QUIC close path); fix cac9cbc3b700, base a44c67f41876."
+}

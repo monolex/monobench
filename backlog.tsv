@@ -14,3 +14,27 @@ bun-27838-sslconfig-race|oven-sh/bun|27838|zig|intern/deref race (SSLConfig, pro
 bun-20093-napi-handlescope-race|oven-sh/bun|20093|c++,js|N-API handle-scope race
 bun-29951-directorywatch-uaf|oven-sh/bun|29951|zig|lifetime UAF (DirectoryWatchStore)
 bun-28907-threadpool-wakeup|oven-sh/bun|28907|zig|lost-wakeup race (ThreadPool.notify)
+# --- language-expansion batch (2026-05-26): new famous repos × new language pairs. Rationale + tiers: research/LANGUAGE-EXPANSION-CANDIDATES-2026-05-26.md
+# built by hand this batch (NOT via gen-instances): ruby-16128-yjit-aliasing-uaf, dotnet-124796-wmiinterop-keepalive
+ruby-16128-yjit-aliasing-uaf|ruby/ruby|16128|rust,ruby,c|UAF: mutable-aliasing UB caches stale version_map (YJIT; crash in lookup/GC-mark/removal ≠ cause)
+ruby-16964-iobuffer-and-uaf|ruby/ruby|16964|ruby,c|UAF on invalidated slice (IO::Buffer#&; parent freed elsewhere)
+dotnet-124796-wmiinterop-keepalive|dotnet/runtime|124796|csharp,c++|premature-GC UAF: missing GC.KeepAlive on native-passed arg (Opus-found; single-file, watch contamination)
+dotnet-125293-gchandle-doublefree-race|dotnet/runtime|125293|csharp,c++|GCHandle double-free race (non-atomic dispose check)
+netty-12036-unsafe-bytebuffer-uaf|netty/netty|12036|java,c|native-memory lifetime UAF (siphoned ByteBuffer outlives UnsafeBuffer)
+redis-14929-restorecmd-meta-uaf|redis/redis|14929|c|re-entrancy UAF: module notification reallocs kvobj; restoreCommand kv dangles
+redis-15095-stream-pel-doublefree|redis/redis|15095|c|double-free: duplicate consumer PEL frees a nack still in cgroup->pel
+php-19591-lexbor-mraw-uaf|php/php-src|19591|php,c|UAF: periodic lexbor_mraw_clean frees data of live Uri\WhatWg\Url objects
+openresty-2483-luapipe-quic-uaf|openresty/lua-nginx-module|2483|lua,c|UAF: ngx_http_lua_pipe cleanup after pool destroyed on QUIC close
+neovim-37647-deferfn-luv-leak|neovim/neovim|37647|lua,c|luv handle leak: defer_fn timer not closed when vim.schedule fails
+grpc-39316-rls-shutdown-uaf|grpc/grpc|39316|c++|UAF: RLS config accessed after LB policy shutdown
+envoy-45153-filestreamer-cancel-uaf|envoyproxy/envoy|45153|c++|UAF: async-file callback after request cancel ([this] capture)
+# gosqlite-1301 DROPPED: PR #1301 is a perf optimization (removes a redundant SetFinalizer), not a crash/wrong-output bug → fails the C5 admission bar. Go slot uses kubernetes-3177 instead.
+kubernetes-3177-envfrom-secret-bypass|kubernetes/kubernetes|124322|go|ServiceAccount mountable-secrets bypass: envFrom secretRef not checked in limitSecretReferences (CVE-2024-3177)
+numpy-31314-nditer-getitem-segfault|numpy/numpy|31314|python,c|re-entrancy segfault: nditer multi_index setter missing NULL check when __getitem__ raises
+pytorch-73029-nnc-run-datarace|pytorch/pytorch|73029|c++|data race: TensorExprKernel.run() mutates sizes/strides under dynamic shapes (parallel calls); 2022 → check contamination
+flutter-170284-surfacetexture-doublefree|flutter/flutter|170284|dart,c++|double-free: reactor frees interop SurfaceTexture already released by detachFromGLContext
+swift-88509-demangler-uaf|swiftlang/swift|88509|swift,c++|UAF: Demangler Words[] not saved across nested demangle calls
+vapor-2500-filemiddleware-traversal|vapor/vapor|2500|swift|path traversal: '..' checked before percent-decoding (FileMiddleware)
+ktor-5626-readchannel-close|ktorio/ktor|5626|kotlin|resource lifecycle: close of an unopened file in readChannel
+spark-43188-persist-none-correctness|apache/spark|43188|scala|correctness: persist(StorageLevel.NONE) on Dataset (SPARK-45386)
+dart-3095-uri-backslash-bypass|dart-lang/sdk|c4c802eeb6fe|dart|host-allowlist/redirect bypass: Uri doesn't normalize '\' to '/' (CVE-2022-3095; Gerrit commit, hand-authored). PURE-Dart instance — flutter-170284 is engine-C++/JNI only.

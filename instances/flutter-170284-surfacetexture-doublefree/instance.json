@@ -1,0 +1,29 @@
+{
+  "id": "flutter-170284-surfacetexture-doublefree",
+  "title": "double free of an interop SurfaceTexture handle (reactor frees what detachFromGLContext released)",
+  "repo": "https://github.com/flutter/flutter",
+  "tag": "ee0eb22cdbea",
+  "base_commit": "ee0eb22cdbea",
+  "languages": ["dart", "c++"],
+  "category": "double-free across the Flutter engine (C++) ↔ Android SurfaceTexture (JNI) boundary",
+  "crash_site": "Flutter Android app (Impeller GLES) crashes after returning to foreground: a GL texture handle is freed twice — once by Android's SurfaceTexture.detachFromGLContext and again by the engine's reactor.",
+  "buggy_files_to_verify": ["engine/src/flutter/impeller/renderer/backend/gles/reactor_gles.cc", "engine/src/flutter/impeller/renderer/backend/gles/texture_gles.cc"],
+  "ground_truth": {
+    "root_cause_file": "engine/src/flutter/impeller/renderer/backend/gles/reactor_gles.cc",
+    "root_cause_fn": "ReactorGLES::CreateHandle",
+    "decoy_fn": "TextureGLES::~TextureGLES (where the engine-side free is issued) and SurfaceTexture.detachFromGLContext (the JNI release). The defect is the reactor tracking an externally-owned handle as if it owns it, so it later double-frees.",
+    "fix_pr": 170284,
+    "fix_commit": "2d30ce56feb7",
+    "fix_summary": "An external SurfaceTexture GL handle was registered with the reactor as a normal owned handle; SurfaceTexture.detachFromGLContext already releases the texture, so the reactor's later collection frees it a second time (after foregrounding), corrupting a handle that may be in active use. Fix: track external handles (CreateHandle gains an external_handle arg) so the reactor does not free them."
+  },
+  "grading": {
+    "full_must_name": ["ReactorGLES::CreateHandle", "CreateHandle", "TextureGLES::~TextureGLES"],
+    "mechanism_keywords": ["double free", "double-free", "SurfaceTexture", "detachFromGLContext", "reactor", "external handle", "interop", "GLuint", "ownership", "release"],
+    "decoy_markers": ["TextureGLES::~TextureGLES", "detachFromGLContext", "destructor"]
+  },
+  "admission": {
+    "note": "Authored from PR #170284 (fixes #152459) body+diff. crash != cause: the second free happens in the reactor after foregrounding; cause is CreateHandle registering an externally-owned (SurfaceTexture/JNI) handle as reactor-owned. NOTE: changed files are engine C++/Android JNI only -> exercises the C++↔JNI boundary, NOT the Dart extractor; pure-Dart-language coverage should use a dart-lang/sdk instance. Run baseline first.",
+    "baseline_full_hit_rate_max": 0.5
+  },
+  "provenance": "https://github.com/flutter/flutter/pull/170284 (fixes #152459) — don't double free surface texture interop objects; fix 2d30ce56feb7, base ee0eb22cdbea."
+}

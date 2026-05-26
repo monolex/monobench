@@ -1,0 +1,29 @@
+{
+  "id": "redis-14929-restorecmd-meta-uaf",
+  "title": "heap-use-after-free in RESTORE when a module sets key metadata during keyspace notification",
+  "repo": "https://github.com/redis/redis",
+  "tag": "bbc0dcbb9af7",
+  "base_commit": "bbc0dcbb9af7",
+  "languages": ["c"],
+  "category": "re-entrancy use-after-free (a module notification callback reallocates the object the caller still holds)",
+  "crash_site": "heap-use-after-free reading the restored object's type field after a RESTORE, surfacing in restoreCommand (src/cluster.c). The read is correct; the object was reallocated underneath it.",
+  "buggy_files_to_verify": ["src/cluster.c", "src/notify.c"],
+  "ground_truth": {
+    "root_cause_file": "src/cluster.c",
+    "root_cause_fn": "restoreCommand",
+    "decoy_fn": "kvobjSet (actually reallocates/frees the kvobj — looks like the culprit but is correct) and RedisModule_SetKeyMeta inside the module callback. The fix lands in restoreCommand (cache the field before the notification).",
+    "fix_pr": 14929,
+    "fix_commit": "40c140bf16ca",
+    "fix_summary": "restoreCommand held a local kv pointer across notifyKeyspaceEvent(). If a module's notification callback calls RedisModule_SetKeyMeta for the first time, kvobjSet reallocates the kvobj (to add a metadata slot) and frees the old one, so the local kv dangles and the subsequent kv->type read is a UAF. Fix: save kv->type to a local before the notification calls."
+  },
+  "grading": {
+    "full_must_name": ["restoreCommand"],
+    "mechanism_keywords": ["use-after-free", "UAF", "re-entran", "reentrant", "keyspace notification", "notifyKeyspaceEvent", "module", "RedisModule_SetKeyMeta", "kvobjSet", "realloc", "dangling", "kv->type"],
+    "decoy_markers": ["kvobjSet", "RedisModule_SetKeyMeta", "notifyKeyspaceEvent"]
+  },
+  "admission": {
+    "note": "Authored from PR #14929 body+diff. crash site == fix fn (restoreCommand) -> moderate C1, BUT the structural difficulty is the re-entrancy: the realloc/free happens deep inside a MODULE notification callback (notifyKeyspaceEvent -> module -> RedisModule_SetKeyMeta -> kvobjSet), far from restoreCommand. Decoy = kvobjSet (the visible free). Tool value = tracing the notification re-entry edge. Run baseline first.",
+    "baseline_full_hit_rate_max": 0.5
+  },
+  "provenance": "https://github.com/redis/redis/pull/14929 — heap-use-after-free in restoreCommand when module sets key metadata during notification; fix 40c140bf16ca, base bbc0dcbb9af7."
+}

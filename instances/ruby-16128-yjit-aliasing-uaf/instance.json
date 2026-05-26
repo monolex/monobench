@@ -1,0 +1,29 @@
+{
+  "id": "ruby-16128-yjit-aliasing-uaf",
+  "title": "YJIT: use-after-free of version_map backing storage from mutable-aliasing UB",
+  "repo": "https://github.com/ruby/ruby",
+  "tag": "906176adb49a",
+  "base_commit": "906176adb49a",
+  "languages": ["rust", "ruby", "c"],
+  "category": "use-after-free (mutable-aliasing UB across the Ruby C-VM iseq ↔ Rust JIT payload boundary)",
+  "crash_site": "SIGSEGV / heap-use-after-free reading a Vec's backing buffer inside assorted YJIT operations — block-version lookup (get_version_list), GC marking of compiled blocks, and block invalidation/removal (invalidate_block_version) in yjit/src/core.rs. Each of those paths is correct; the version_map they read was reallocated/freed underneath them.",
+  "buggy_files_to_verify": ["yjit/src/core.rs", "yjit/src/invariants.rs"],
+  "ground_truth": {
+    "root_cause_file": "yjit/src/core.rs",
+    "root_cause_fn": "add_block_version",
+    "decoy_fn": "the crash sites — get_version_list (block lookup), the GC mark path, and invalidate_block_version (block removal) — which dereference the stale version_map but are correct. The standalone delayed_deallocation() free-fn is the secondary cause (it re-fetched a second &mut payload).",
+    "fix_pr": 16128,
+    "fix_commit": "e730ac41be4d",
+    "fix_summary": "add_block_version obtained the iseq payload twice (once via get_or_create_iseq_payload to reach version_map, once via get_iseq_payload(...).unwrap() to reach .pages), creating two overlapping &'static mut IseqPayload. Under noalias, LLVM cached a stale version_map Vec header pointing at freed backing storage -> UAF. Fix: take a single iseq_payload reference and access both version_map (new method IseqPayload::get_or_create_version_list) and pages through it; convert the standalone delayed_deallocation() free-fn into an IseqPayload method so invalidate_block_version reuses its existing reference."
+  },
+  "grading": {
+    "full_must_name": ["add_block_version", "get_iseq_payload", "delayed_deallocation", "IseqPayload"],
+    "mechanism_keywords": ["use-after-free", "UAF", "mutable aliasing", "aliasing", "&mut", "noalias", "LLVM", "version_map", "get_iseq_payload", "stale", "backing storage", "two references", "overlapping"],
+    "decoy_markers": ["get_version_list", "block lookup", "GC marking", "gc_mark", "block removal", "invalidate_block_version"]
+  },
+  "admission": {
+    "note": "Authored from PR #16128 body+diff. crash != cause: ASAN fires in block lookup / GC marking / block removal (3 live decoys), but the cause is two overlapping &mut IseqPayload created earlier in add_block_version (and the delayed_deallocation free-fn), letting LLVM noalias cache a freed version_map header. No symptom token greps to add_block_version or 'aliasing'. Cross-boundary: Ruby C VM iseq <-> Rust JIT payload. Run baseline first.",
+    "baseline_full_hit_rate_max": 0.5
+  },
+  "provenance": "https://github.com/ruby/ruby/pull/16128 — YJIT: Fix version_map use-after-free from mutable aliasing UB; fix commit e730ac41be4d, base 906176adb49a. Root cause + decoys from PR body + diff (single iseq_payload ref; new get_or_create_version_list method; delayed_deallocation made a method)."
+}

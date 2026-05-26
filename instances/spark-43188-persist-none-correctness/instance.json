@@ -1,0 +1,29 @@
+{
+  "id": "spark-43188-persist-none-correctness",
+  "title": "persist(StorageLevel.NONE) on a Dataset gives wrong results",
+  "repo": "https://github.com/apache/spark",
+  "tag": "8f1b02880cb9",
+  "base_commit": "8f1b02880cb9",
+  "languages": ["scala"],
+  "category": "correctness (caching a relation at StorageLevel.NONE yields empty/incorrect query results)",
+  "crash_site": "wrong query result (e.g. count() returns 0 / incorrect) after calling .persist(StorageLevel.NONE) on a Dataset; no exception, just a wrong answer downstream of the persist call.",
+  "buggy_files_to_verify": ["sql/core/src/main/scala/org/apache/spark/sql/execution/CacheManager.scala"],
+  "ground_truth": {
+    "root_cause_file": "sql/core/src/main/scala/org/apache/spark/sql/execution/CacheManager.scala",
+    "root_cause_fn": "cacheQuery",
+    "decoy_fn": "InMemoryRelation / the executed query plan that returns the wrong rows, and lookupCachedData. The defect is cacheQuery registering a cache entry for StorageLevel.NONE (which stores nothing) instead of not caching.",
+    "fix_pr": 43188,
+    "fix_commit": "a0c9ab63f3bc",
+    "fix_summary": "CacheManager.cacheQuery did not special-case StorageLevel.NONE; it registered an InMemoryRelation that caches no data, so later reads of the 'cached' plan returned nothing / wrong counts. Fix: do nothing in cacheQuery when storageLevel == StorageLevel.NONE (don't cache)."
+  },
+  "grading": {
+    "full_must_name": ["cacheQuery"],
+    "mechanism_keywords": ["correctness", "StorageLevel.NONE", "cacheQuery", "InMemoryRelation", "persist", "no data", "wrong count", "do nothing", "cache"],
+    "decoy_markers": ["InMemoryRelation", "lookupCachedData", "the query plan"]
+  },
+  "admission": {
+    "note": "Authored from PR #43188 (SPARK-45386) diff. crash != cause: symptom is a wrong count downstream; cause is cacheQuery caching a NONE-level relation (stores nothing) instead of skipping. Logic/correctness bug; somewhat greppable (StorageLevel.NONE) -> watch C2/C5. Scala is OK-tier in monogram, so this is a regression GUARD. Run baseline first.",
+    "baseline_full_hit_rate_max": 0.5
+  },
+  "provenance": "https://github.com/apache/spark/pull/43188 — [SPARK-45386] Fix correctness issue with persist using StorageLevel.NONE; fix a0c9ab63f3bc, base 8f1b02880cb9."
+}

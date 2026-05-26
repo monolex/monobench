@@ -1,0 +1,29 @@
+{
+  "id": "ruby-16964-iobuffer-and-uaf",
+  "title": "IO::Buffer#& use-after-free when self or mask is an invalidated slice",
+  "repo": "https://github.com/ruby/ruby",
+  "tag": "356c0cd0e795",
+  "base_commit": "356c0cd0e795",
+  "languages": ["ruby", "c"],
+  "category": "use-after-free (stale slice base pointer across the Ruby-object ↔ C-buffer boundary)",
+  "crash_site": "SIGSEGV / heap-use-after-free reading a buffer base pointer inside io_buffer.c during IO::Buffer#& (bitwise AND). The operator code is correct; the memory it reads was already released.",
+  "buggy_files_to_verify": ["io_buffer.c"],
+  "ground_truth": {
+    "root_cause_file": "io_buffer.c",
+    "root_cause_fn": "io_buffer_and",
+    "decoy_fn": "io_buffer_free / IO::Buffer#free (the actual invalidation, performed elsewhere) and the sibling operators io_buffer_or / io_buffer_xor. The crash is in io_buffer_and but the freeing happened earlier on the parent buffer.",
+    "fix_pr": 16964,
+    "fix_commit": "2552db04ddc4",
+    "fix_summary": "io_buffer_and read buffer->base and mask_buffer->base directly without checking the buffers were still live; a slice whose parent had been freed kept a stale base pointer -> UAF. Fix: use io_buffer_get_bytes_for_reading for both operands, which raises IO::Buffer::InvalidatedError before any memory access."
+  },
+  "grading": {
+    "full_must_name": ["io_buffer_and"],
+    "mechanism_keywords": ["use-after-free", "UAF", "invalidated", "slice", "stale", "base", "buffer->base", "io_buffer_get_bytes_for_reading", "InvalidatedError", "freed", "parent"],
+    "decoy_markers": ["io_buffer_free", "io_buffer_or", "io_buffer_xor", "IO::Buffer#free"]
+  },
+  "admission": {
+    "note": "Authored from PR #16964 body+diff. crash != cause: the SEGV is in io_buffer_and reading buffer->base, but the cause is the parent buffer freed elsewhere (IO::Buffer#free) leaving the slice's base dangling; io_buffer_and failed to validate liveness the way other read paths do (io_buffer_get_bytes_for_reading). Single file -> if a hard baseline greps io_buffer.c to FULL, down-weight. Ruby slice lifetime <-> C base pointer. Run baseline first.",
+    "baseline_full_hit_rate_max": 0.5
+  },
+  "provenance": "https://github.com/ruby/ruby/pull/16964 — Fix UAF in IO::Buffer#& when self or mask is an invalidated slice; fix 2552db04ddc4, base 356c0cd0e795."
+}

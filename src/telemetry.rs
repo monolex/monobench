@@ -19,6 +19,14 @@ fn denied_text(t: &str) -> bool {
         || lc.contains("disallow")
         || lc.contains("denied")
         || lc.contains("git is disabled during solver runs")
+        || lc.contains("operation not permitted") // Seatbelt sandbox-exec deny (git/.git/answer-key)
+}
+
+/// A git invocation in `cmd` — bare `git`, absolute `/usr/bin/git`, or after `cd x &&`.
+/// Used to apply the run-level sandbox git-deny override.
+fn is_git_command(cmd: &str) -> bool {
+    cmd.split(|c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|' | '('))
+        .any(|w| w == "git" || w.ends_with("/git"))
 }
 
 pub fn label_from_path(path: &str) -> String {
@@ -301,6 +309,19 @@ pub fn codex_err_events(path: &str) -> Vec<ToolEvent> {
             i = j;
         } else {
             i += 1;
+        }
+    }
+    // sandbox-exec (Seatbelt) denies git AT EXEC; "operation not permitted: git" lands in stderr
+    // but not always inside the matching exec-block body, so per-call denial under-counts. The
+    // sandbox is categorical: if it denied git anywhere in this run, EVERY git command was denied.
+    let lc_all = text.to_lowercase();
+    if lc_all.contains("operation not permitted: git")
+        || lc_all.contains("operation not permitted: /usr/bin/git")
+    {
+        for ev in out.iter_mut() {
+            if is_git_command(&ev.cmd) {
+                ev.denied = true;
+            }
         }
     }
     out

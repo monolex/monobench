@@ -1,0 +1,29 @@
+{
+  "id": "pytorch-73029-nnc-run-datarace",
+  "title": "TensorExprKernel::run mutates kernel state under dynamic shapes -> data race on parallel calls",
+  "repo": "https://github.com/pytorch/pytorch",
+  "tag": "74cd18623ec3",
+  "base_commit": "74cd18623ec3",
+  "languages": ["c++"],
+  "category": "data race (shared kernel state mutated by a method documented as safe to call concurrently)",
+  "crash_site": "TSAN data race / intermittent wrong results when a TorchScript model compiled with the NNC/TensorExpr fuser is executed concurrently (Static Runtime) — the same kernel object is run() from multiple threads.",
+  "buggy_files_to_verify": ["torch/csrc/jit/tensorexpr/kernel.cpp"],
+  "ground_truth": {
+    "root_cause_file": "torch/csrc/jit/tensorexpr/kernel.cpp",
+    "root_cause_fn": "TensorExprKernel::run",
+    "decoy_fn": "prepareRunArgs / runWithAllocatedOutputs (called from run) where the sizes/strides vectors are touched. The defect is run() mutating shared TensorExprKernel state at all when dynamic shapes are present.",
+    "fix_pr": 73029,
+    "fix_commit": "7fa092949eec",
+    "fix_summary": "TensorExprKernel is created once and run() many times, possibly in parallel. With dynamic shapes, run() modified the kernel's sizes/strides vectors (shared state) -> data race under Static Runtime. Fix: make run() not mutate shared state (compute per-call args without writing them back into the kernel)."
+  },
+  "grading": {
+    "full_must_name": ["TensorExprKernel::run", "run"],
+    "mechanism_keywords": ["data race", "race", "mutate", "shared state", "sizes", "strides", "dynamic shapes", "parallel", "Static Runtime", "thread", "const"],
+    "decoy_markers": ["prepareRunArgs", "runWithAllocatedOutputs"]
+  },
+  "admission": {
+    "note": "Authored from PR #73029 body+diff. C1 is MODERATE: the race is in run()'s own mutation of sizes/strides (crash≈cause); the difficulty is realizing run() (documented safe to call repeatedly/in parallel) must be non-mutating, and the write only happens on the dynamic-shapes path. 2022 -> CHECK CONTAMINATION before trusting results. Pure C++ concurrency/state. Run baseline first.",
+    "baseline_full_hit_rate_max": 0.5
+  },
+  "provenance": "https://github.com/pytorch/pytorch/pull/73029 — [NNC] TensorExprKernel state should not be modified on calls to run; fix 7fa092949eec, base 74cd18623ec3."
+}

@@ -1,0 +1,29 @@
+{
+  "id": "redis-15095-stream-pel-doublefree",
+  "title": "double free loading a stream with duplicate consumer PEL entries",
+  "repo": "https://github.com/redis/redis",
+  "tag": "0d9576435f83",
+  "base_commit": "0d9576435f83",
+  "languages": ["c"],
+  "category": "double-free (ownership: a NACK freed on an error path while still referenced by the group PEL)",
+  "crash_site": "server abort / heap corruption during or after loading a stream from RDB or RESTORE; the fault surfaces while tearing down the stream object, not where the malformed entry is parsed.",
+  "buggy_files_to_verify": ["src/rdb.c"],
+  "ground_truth": {
+    "root_cause_file": "src/rdb.c",
+    "root_cause_fn": "rdbLoadObject",
+    "decoy_fn": "streamFreeNACK (performs the free — looks like the culprit but is correct) and the stream teardown / freeStreamObject path where the second free actually crashes.",
+    "fix_pr": 15095,
+    "fix_commit": "fab099cdcffb",
+    "fix_summary": "Loading a stream whose consumer PEL lists the same pending ID twice hit an error branch in rdbLoadObject that called streamFreeNACK() on a NACK still referenced from the group's global PEL (cgroup->pel). Teardown then freed it again -> double free. Fix: on the raxTryInsert(consumer->pel, ...) failure branch, stop calling streamFreeNACK and rely on decrRefCount(o) for cleanup (the NACK is owned by cgroup->pel)."
+  },
+  "grading": {
+    "full_must_name": ["rdbLoadObject"],
+    "mechanism_keywords": ["double free", "double-free", "consumer PEL", "cgroup->pel", "streamFreeNACK", "raxTryInsert", "decrRefCount", "shared", "NACK", "ownership", "duplicate"],
+    "decoy_markers": ["streamFreeNACK", "freeStreamObject", "freeStream", "teardown"]
+  },
+  "admission": {
+    "note": "Authored from PR #15095 (fixes #15082) body+diff. crash != cause: the double-free aborts during stream teardown; the cause is the duplicate-consumer-PEL error branch in rdbLoadObject freeing a NACK still owned by cgroup->pel. Decoy = streamFreeNACK. Trigger is a crafted/corrupt RDB (PR notes the branch isn't normally reachable). C ownership graph. Run baseline first.",
+    "baseline_full_hit_rate_max": 0.5
+  },
+  "provenance": "https://github.com/redis/redis/pull/15095 (fixes #15082) — double free loading streams with duplicate consumer PEL entries; fix fab099cdcffb, base 0d9576435f83."
+}

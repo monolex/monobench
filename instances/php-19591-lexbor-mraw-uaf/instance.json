@@ -1,0 +1,29 @@
+{
+  "id": "php-19591-lexbor-mraw-uaf",
+  "title": "use-after-free of live Uri\\WhatWg\\Url objects via periodic lexbor mraw clean",
+  "repo": "https://github.com/php/php-src",
+  "tag": "90822f7692e7",
+  "base_commit": "90822f7692e7",
+  "languages": ["php", "c"],
+  "category": "use-after-free across the PHP ↔ lexbor (C) boundary (shared arena cleaned out from under live objects)",
+  "crash_site": "segfault / heap-use-after-free reading the data of a live Uri\\WhatWg\\Url object after a number of URL parses in the same request. The object access is valid PHP; its backing memory was reclaimed.",
+  "buggy_files_to_verify": ["ext/uri/uri_parser_whatwg.c"],
+  "ground_truth": {
+    "root_cause_file": "ext/uri/uri_parser_whatwg.c",
+    "root_cause_fn": "php_uri_parser_whatwg_parse_ex",
+    "decoy_fn": "php_uri_parser_whatwg_free (the per-object teardown the fix ADDS — correct) and the RSHUTDOWN handler. The defect is the periodic lexbor_mraw_clean() that reclaims memory still owned by live Url objects.",
+    "fix_pr": 19591,
+    "fix_commit": "423960aad30b",
+    "fix_summary": "The WhatWG URI parser periodically called lexbor_mraw_clean(lexbor_parser.mraw), destroying the data backing any live Uri\\WhatWg\\Url object -> UAF. Fix: remove the periodic lexbor_mraw_clean(); add php_uri_parser_whatwg_free() to free per object; move lexbor teardown from RSHUTDOWN to POST_ZEND_DEACTIVATE so frees run before the arena is destroyed."
+  },
+  "grading": {
+    "full_must_name": ["php_uri_parser_whatwg_parse_ex", "lexbor_mraw_clean"],
+    "mechanism_keywords": ["use-after-free", "UAF", "lexbor_mraw_clean", "mraw", "arena", "live", "Url", "WhatWg", "POST_ZEND_DEACTIVATE", "RSHUTDOWN", "reclaim"],
+    "decoy_markers": ["php_uri_parser_whatwg_free", "RSHUTDOWN", "uri_module_entry"]
+  },
+  "admission": {
+    "note": "Authored from PR #19591 body+diff. crash != cause: UAF reading a live Url object; cause is a periodic lexbor_mraw_clean() in the WhatWG parser lifecycle reclaiming the shared lexbor arena that live PHP Url objects still point into. Decoy = php_uri_parser_whatwg_free (the correct teardown the fix introduces). PHP object lifetime <-> lexbor (C) arena. Run baseline first.",
+    "baseline_full_hit_rate_max": 0.5
+  },
+  "provenance": "https://github.com/php/php-src/pull/19591 — uri: Fix lexbor memory management in uri_parser_whatwg.c; fix 423960aad30b, base 90822f7692e7."
+}

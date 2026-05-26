@@ -1,0 +1,29 @@
+{
+  "id": "envoy-45153-filestreamer-cancel-uaf",
+  "title": "use-after-free: async-file callback fires after the FileStreamer is destroyed on request cancel",
+  "repo": "https://github.com/envoyproxy/envoy",
+  "tag": "671bb592d454",
+  "base_commit": "671bb592d454",
+  "languages": ["c++"],
+  "category": "use-after-free (bare `this` captured into an async callback guaranteed to fire even after cancel)",
+  "crash_site": "Envoy ASAN heap-use-after-free in the file_server HTTP filter when a client cancels a request that is serving a file: an async filesystem callback runs after the request's FileStreamer was destroyed.",
+  "buggy_files_to_verify": ["source/extensions/filters/http/file_server/file_streamer.cc"],
+  "ground_truth": {
+    "root_cause_file": "source/extensions/filters/http/file_server/file_streamer.cc",
+    "root_cause_fn": "FileStreamer::startDir",
+    "decoy_fn": "the AsyncFileManager stat()/read() callback bodies and FileStreamer::readBodyChunk where the deref crashes — correct in themselves; the defect is the bare [this] capture in the methods that issue the async ops (begin/startDir/readBodyChunk).",
+    "fix_pr": 45153,
+    "fix_commit": "96294652f7f2",
+    "fix_summary": "FileStreamer captured a bare [this] into the callbacks returned by AsyncFileManager::stat()/read(). The async-file manager guarantees the callback fires even if cancel() was called, so when the FileStreamer is destroyed (request cancelled) before the callback runs, the [this] dangles and the callback dereferences freed memory. Fix: guard the callbacks against running after destruction (cancel/weak-handle the captured this)."
+  },
+  "grading": {
+    "full_must_name": ["FileStreamer::startDir", "startDir", "FileStreamer::begin", "readBodyChunk"],
+    "mechanism_keywords": ["use-after-free", "UAF", "this capture", "[this]", "AsyncFileManager", "callback", "cancel", "destroyed", "dangling", "async", "guarantee"],
+    "decoy_markers": ["readBodyChunk crash", "AsyncFileManager callback", "stat", "read callback"]
+  },
+  "admission": {
+    "note": "Authored from PR #45153 commit-message+diff. crash != cause: the async-file callback fires after request cancel and derefs a destroyed FileStreamer; cause is the bare [this] capture in the methods issuing the async ops (begin/startDir/readBodyChunk). Decoy = the callback body / readBodyChunk crash site. Pure C++ lifetime across an async boundary. Run baseline first.",
+    "baseline_full_hit_rate_max": 0.5
+  },
+  "provenance": "https://github.com/envoyproxy/envoy/pull/45153 — file_server: fix UAF on async-file callback after request cancel; fix 96294652f7f2, base 671bb592d454."
+}

@@ -1,0 +1,29 @@
+{
+  "id": "kubernetes-3177-envfrom-secret-bypass",
+  "title": "ServiceAccount mountable-secrets restriction bypass via envFrom secretRef",
+  "repo": "https://github.com/kubernetes/kubernetes",
+  "tag": "cae35dba5a30",
+  "base_commit": "cae35dba5a30",
+  "languages": ["go"],
+  "category": "missing-check-arm (authorization bypass: one of several secret-consumption paths is not validated)",
+  "crash_site": "with kubernetes.io/enforce-mountable-secrets set on a ServiceAccount, a pod that should be rejected for referencing a non-allowed Secret is admitted anyway; the admission plugin returns no error.",
+  "buggy_files_to_verify": ["plugin/pkg/admission/serviceaccount/admission.go"],
+  "ground_truth": {
+    "root_cause_file": "plugin/pkg/admission/serviceaccount/admission.go",
+    "root_cause_fn": "limitSecretReferences",
+    "decoy_fn": "the present, correct loops over volumes, container env[].valueFrom.secretKeyRef, and imagePullSecrets. The defect is the ABSENT loop over container.EnvFrom[].SecretRef (also missing in limitEphemeralContainerSecretReferences).",
+    "fix_pr": 124322,
+    "fix_commit": "b722d017a34b",
+    "fix_summary": "limitSecretReferences enforced the mountable-secrets allowlist for volumes, env valueFrom.secretKeyRef, and imagePullSecrets, but never checked container.EnvFrom[].SecretRef. A pod could reference a non-allowed Secret via envFrom and pass admission. Fix: add the missing envFrom.SecretRef check loop (in both limitSecretReferences and limitEphemeralContainerSecretReferences)."
+  },
+  "grading": {
+    "full_must_name": ["limitSecretReferences"],
+    "mechanism_keywords": ["envFrom", "EnvFrom", "SecretRef", "mountable secrets", "mountableSecrets", "missing", "bypass", "not checked", "allowlist", "admission"],
+    "decoy_markers": ["volumes loop", "valueFrom.secretKeyRef", "imagePullSecrets", "secretKeyRef"]
+  },
+  "admission": {
+    "note": "Authored from PR #124322 (CVE-2024-3177) diff. No crash: the symptom is a pod that SHOULD be rejected being admitted; the cause is an ABSENT envFrom.SecretRef arm in limitSecretReferences (other arms present + correct). C2 STRONG: grep 'envFrom' in the buggy plugin returns nothing (missing code). FAMOUS CVE (2024-3177) -> CHECK CONTAMINATION; down-weight if baseline FULL-solves from prose. Pure Go. Run baseline first.",
+    "baseline_full_hit_rate_max": 0.5
+  },
+  "provenance": "https://github.com/kubernetes/kubernetes/pull/124322 (CVE-2024-3177) — limit secret refs from envFrom in ServiceAccount admission; fix b722d017a34b, base cae35dba5a30."
+}

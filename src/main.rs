@@ -2081,7 +2081,7 @@ fn main() {
             );
             println!("\n[NEXT]");
             println!(
-                "  monobench evidence {id} --pattern 'region_first_next|success_pattern_next|score-debug|ROOTCAUSE'"
+                "  monobench evidence {id} --pattern 'region_first_next|success_pattern_next|score-debug|ROOTCAUSE'  # verify maker recommendations"
             );
             println!(
                 "  monobench trace {id} <run>                   # classify: path not closed vs closed but uncalibrated"

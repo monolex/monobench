@@ -1,0 +1,29 @@
+{
+  "id": "grpc-39316-rls-shutdown-uaf",
+  "title": "use-after-free accessing RLS config after the LB policy is shut down",
+  "repo": "https://github.com/grpc/grpc",
+  "tag": "26fe06e53783",
+  "base_commit": "26fe06e53783",
+  "languages": ["c++"],
+  "category": "use-after-free (a picker reads policy state after the LB policy was destroyed)",
+  "crash_site": "gRPC C-core ASAN heap-use-after-free reading an RLS load-balancing config during a pick, while the RLS LB policy is being shut down concurrently (channel teardown / resolver update).",
+  "buggy_files_to_verify": ["src/core/load_balancing/rls/rls.cc"],
+  "ground_truth": {
+    "root_cause_file": "src/core/load_balancing/rls/rls.cc",
+    "root_cause_fn": "RlsLb::Picker::Pick",
+    "decoy_fn": "RlsLb::Cache::Entry::Pick / Cache::Entry::Size where freed state is also touched. The defect is the Picker holding/using config state whose owning RlsLb was shut down and destroyed.",
+    "fix_pr": 39316,
+    "fix_commit": "6c472088f7ce",
+    "fix_summary": "RlsLb::Picker::Pick accessed config owned by the RlsLb policy without keeping it alive; after the policy was shut down and destroyed, an in-flight pick dereferenced the freed config -> UAF. Fix: have the Picker hold its own reference to the config so it outlives policy shutdown."
+  },
+  "grading": {
+    "full_must_name": ["Pick", "RlsLb::Picker::Pick"],
+    "mechanism_keywords": ["use-after-free", "UAF", "config", "shutdown", "LB policy", "RlsLb", "Picker", "RefCountedPtr", "dangling", "ShutdownLocked", "outlive"],
+    "decoy_markers": ["Cache::Entry::Pick", "Cache::Entry::Size"]
+  },
+  "admission": {
+    "note": "Authored from PR #39316 (backport of #39303, fixes #39217) title+diff. crash != cause: UAF during a pick reading config; cause is RlsLb::Picker::Pick using config whose owning policy was shut down/destroyed (no ref held). Decoy = Cache::Entry::Pick. Pure C++ ownership across the policy/picker lifetime. Run baseline first.",
+    "baseline_full_hit_rate_max": 0.5
+  },
+  "provenance": "https://github.com/grpc/grpc/pull/39316 — [RLS] fix use-after-free from accessing config after LB policy shutdown; fix 6c472088f7ce, base 26fe06e53783."
+}

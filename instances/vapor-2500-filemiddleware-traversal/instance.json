@@ -1,0 +1,29 @@
+{
+  "id": "vapor-2500-filemiddleware-traversal",
+  "title": "FileMiddleware path traversal: '..' checked before percent-decoding",
+  "repo": "https://github.com/vapor/vapor",
+  "tag": "236c616ca1d7",
+  "base_commit": "236c616ca1d7",
+  "languages": ["swift"],
+  "category": "path traversal (order-of-operations: directory-escape check runs before percent-decode)",
+  "crash_site": "Vapor app serving static files via FileMiddleware returns files outside the configured public directory when the request path contains percent-encoded traversal sequences.",
+  "buggy_files_to_verify": ["Sources/Vapor/Middleware/FileMiddleware.swift"],
+  "ground_truth": {
+    "root_cause_file": "Sources/Vapor/Middleware/FileMiddleware.swift",
+    "root_cause_fn": "respond",
+    "decoy_fn": "the percent-decoding call (removingPercentEncoding) and the file-read/NIOFileSystem access where the traversal lands. The defect is that respond performs the '..' containment check on the still-encoded path, then decodes.",
+    "fix_pr": 2500,
+    "fix_commit": "cf1651f7ff76",
+    "fix_summary": "FileMiddleware.respond checked for '..' on the raw (still percent-encoded) path and only decoded afterward, so an input like /%2e%2e/ passed the check but resolved to ../ -> path traversal. Fix: decode percent-encoding before the containment check (fix the relative percent decoding order)."
+  },
+  "grading": {
+    "full_must_name": ["respond"],
+    "mechanism_keywords": ["path traversal", "percent", "decode", "removingPercentEncoding", "..", "%2e", "order", "before", "check", "FileMiddleware", "public directory"],
+    "decoy_markers": ["removingPercentEncoding", "the file read", "NIOFileSystem", "openFile"]
+  },
+  "admission": {
+    "note": "Authored from PR #2500 (CVE-2020-15230) body+diff. crash != cause: the traversal 'lands' at the file-read; the cause is FileMiddleware.respond doing the '..' check on the encoded path before decoding. Decoy = the decode call. Single-file Swift logic -> watch contamination/grep. Pure Swift-LANGUAGE instance. Run baseline first.",
+    "baseline_full_hit_rate_max": 0.5
+  },
+  "provenance": "https://github.com/vapor/vapor/pull/2500 — fix relative percent decoding in file middleware (CVE-2020-15230); fix cf1651f7ff76, base 236c616ca1d7."
+}

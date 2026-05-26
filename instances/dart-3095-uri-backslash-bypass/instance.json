@@ -1,0 +1,29 @@
+{
+  "id": "dart-3095-uri-backslash-bypass",
+  "title": "Uri treats backslash differently from browsers -> host-allowlist / redirect bypass",
+  "repo": "https://github.com/dart-lang/sdk",
+  "tag": "c42a304ce78f",
+  "base_commit": "c42a304ce78f",
+  "languages": ["dart"],
+  "category": "logic (URL normalization mismatch: '\\' not normalized to '/' in path/authority) -> auth/SSRF bypass",
+  "crash_site": "an app that allowlists Uri.parse(input).host accepts a crafted URL that Dart parses with host=allowed-host but a browser/other client resolves to a different (attacker) host; no error, just a wrong host value.",
+  "buggy_files_to_verify": ["sdk/lib/core/uri.dart"],
+  "ground_truth": {
+    "root_cause_file": "sdk/lib/core/uri.dart",
+    "root_cause_fn": "_normalizeOrSubstring",
+    "decoy_fn": "the public Uri.parse / _Uri factory and the host getter where the wrong value is read. The defect is _Uri's path/authority normalization (_normalizeOrSubstring / _normalizePath) not converting backslash to forward-slash the way browsers do.",
+    "fix_pr": 0,
+    "fix_commit": "c4c802eeb6fe",
+    "fix_summary": "Dart's Uri did not normalize '\\' to '/' in path and authority, so Uri.parse(input).host disagreed with how browsers resolve the same URL -> host-allowlist / open-redirect checks could be bypassed. Fix: thread a replaceBackslash option through _Uri._normalizeOrSubstring (and path normalization) so '\\' is treated as '/'."
+  },
+  "grading": {
+    "full_must_name": ["_normalizeOrSubstring", "_Uri", "_normalizePath"],
+    "mechanism_keywords": ["backslash", "normalize", "forward slash", "authority", "path", "host", "browser", "allowlist", "bypass", "replaceBackslash", "0x5C"],
+    "decoy_markers": ["Uri.parse", "host getter", "_Uri factory"]
+  },
+  "admission": {
+    "note": "Authored from commit c4c802eeb6fe (CVE-2022-3095) diff. crash != cause: symptom is a wrong .host used by an allowlist; cause is _Uri normalization not converting '\\' -> '/'. Decoy = Uri.parse / host getter. PURE Dart-LANGUAGE instance (sdk/lib/core/uri.dart) -> exercises monogram's Dart extractor (a NO-CALLS language). 2022 famous-ish CVE -> check contamination. Run baseline first.",
+    "baseline_full_hit_rate_max": 0.5
+  },
+  "provenance": "https://github.com/dart-lang/sdk commit c4c802eeb6fe (CVE-2022-3095) — Make Uri treat '\\' as '/' in path and authority; base c42a304ce78f. (dart-lang uses Gerrit; no GitHub PR number.)"
+}

@@ -89,7 +89,8 @@ COMMANDS
   adoption <id>              Per-run tool-call + monogram-subcommand breakdown (calls/share/first-use/
                              fails/mix) — for CLI and MCP delivery. "Did the agent actually use it?"
   monogram-audit <id>        Diagnose monogram command/result failure patterns in solver telemetry
-                             (SQLite lock, no symbol/results, coupling/index hint, huge output).
+                             and print maker recommendations for general score/proof/budget/NEXT
+                             changes (not solver hints).
   meter <session.jsonl>      Summarize tokens/cache/cost for a raw model session JSONL.
   add <id>                   Scaffold a new instance from instances/_TEMPLATE/.
   version                    Print the monobench version.
@@ -166,7 +167,7 @@ FLOW  (every command ends with [NEXT]; no command dead-ends — monogram-style d
 
   compare tool vs baseline:     run <id> baseline → run <id> monogram → report <id>
   investigate a MISS:           report <id> → evidence <id> <run> --pattern ROOTCAUSE → trace <id> <run> → export <id> <run>
-  diagnose monogram loop:       monogram-audit <id> → evidence <id> --pattern 'region_first_next|score-debug|ROOTCAUSE' → classify path-not-closed vs closed-but-uncalibrated
+  diagnose monogram loop:       monogram-audit <id> → read MAKER RECOMMENDATIONS → evidence <id> --pattern 'region_first_next|score-debug|ROOTCAUSE' → classify path-not-closed vs closed-but-uncalibrated
   validate before counting:     integrity <id> → inspect <id> <run> → rerun if contaminated
   scan conclusions (all runs):  evidence <id> --pattern ROOTCAUSE → evidence <id> <run>
   watch live runs:              matrix <id> … → watch --live  /  status <id> --live

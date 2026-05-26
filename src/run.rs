@@ -1060,8 +1060,19 @@ pub fn run(
             let ans = out.join(format!("{runid}.answer.txt"));
             let err = out.join(format!("{runid}.err"));
             let git_deny = install_git_deny_wrapper(&runid);
+            // kernel-level git block (+ answer-key/.git read-jail) — codex has no usable native
+            // command-deny and runs with --dangerously-bypass-…-sandbox, so the PATH shim alone
+            // is bypassable. Wrap in sandbox-exec like agy.
+            let jail = agy_read_jail_profile(root, &runid);
             let t0 = std::time::Instant::now();
-            let mut cmd = Command::new("codex");
+            let mut cmd = match &jail {
+                Some(p) => {
+                    let mut c = Command::new("sandbox-exec");
+                    c.arg("-f").arg(p).arg("codex");
+                    c
+                }
+                None => Command::new("codex"),
+            };
             cmd.arg("exec").arg("-C").arg(&clone).args([
                 "--skip-git-repo-check",
                 "--dangerously-bypass-approvals-and-sandbox",
@@ -1245,7 +1256,18 @@ pub fn run(
             };
             let prompt = format!("{sys}\n\n{}\n# YOUR TASK\n{q}", "═".repeat(80));
             let git_deny = install_git_deny_wrapper(&runid);
-            let mut cmd = Command::new("claude");
+            // kernel-level git block (+ read-jail) in addition to --disallowedTools "Bash(git:*)":
+            // the matcher misses compound/absolute git (`cd x && /usr/bin/git log`); sandbox-exec
+            // closes that hole for every invocation.
+            let jail = agy_read_jail_profile(root, &runid);
+            let mut cmd = match &jail {
+                Some(p) => {
+                    let mut c = Command::new("sandbox-exec");
+                    c.arg("-f").arg(p).arg("claude");
+                    c
+                }
+                None => Command::new("claude"),
+            };
             cmd.current_dir(&clone).arg("-p").arg(&prompt).args([
                 "--output-format",
                 "stream-json",
@@ -1298,8 +1320,18 @@ pub fn run(
                 model
             };
             let git_deny = install_git_deny_wrapper(&runid);
+            // kernel-level git block (+ read-jail); grok runs --always-approve so the PATH shim
+            // alone is bypassable. Wrap in sandbox-exec like agy.
+            let jail = agy_read_jail_profile(root, &runid);
             let t0 = std::time::Instant::now();
-            let mut cmd = Command::new("grok");
+            let mut cmd = match &jail {
+                Some(p) => {
+                    let mut c = Command::new("sandbox-exec");
+                    c.arg("-f").arg(p).arg("grok");
+                    c
+                }
+                None => Command::new("grok"),
+            };
             cmd.current_dir(&clone)
                 .arg("-p")
                 .arg(&prompt)
@@ -1608,7 +1640,15 @@ pub(crate) fn agy_read_jail_profile(root: &Path, tag: &str) -> Option<PathBuf> {
     } else {
         vec![canon, root.to_path_buf()]
     };
-    let mut profile = String::from("(version 1)\n(allow default)\n");
+    let mut profile = String::from(
+        "(version 1)\n(allow default)\n\
+         ; anti-contamination: block git ITSELF at the kernel (process-exec), not just via PATH —\n\
+         ; the solver cannot read the fix from history however it invokes git (absolute path,\n\
+         ; login shell, env). Reading any .git data is denied too, as defense-in-depth.\n\
+         (deny process-exec* (regex #\"(^|/)git$\"))\n\
+         (deny process-exec* (regex #\"(^|/)git-\"))\n\
+         (deny file-read* (regex #\"(^|/)\\.git(/|$)\"))\n",
+    );
     for base in &bases {
         for sub in ["instances", "research"] {
             profile.push_str(&format!(

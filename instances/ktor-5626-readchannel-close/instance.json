@@ -1,0 +1,29 @@
+{
+  "id": "ktor-5626-readchannel-close",
+  "title": "File.readChannel closes an unopened file on an early path",
+  "repo": "https://github.com/ktorio/ktor",
+  "tag": "3ccad96fbb89",
+  "base_commit": "3ccad96fbb89",
+  "languages": ["kotlin"],
+  "category": "resource lifecycle (closing a file/channel that was never successfully opened)",
+  "crash_site": "exception / spurious failure (e.g. on Linux, curl WebSocket timeouts) traced to File.readChannel closing a file handle that was not actually opened, in ktor-utils FileChannels.kt.",
+  "buggy_files_to_verify": ["ktor-utils/jvm/src/io/ktor/util/cio/FileChannels.kt"],
+  "ground_truth": {
+    "root_cause_file": "ktor-utils/jvm/src/io/ktor/util/cio/FileChannels.kt",
+    "root_cause_fn": "readChannel",
+    "decoy_fn": "the close()/use{} call where the failure surfaces, and the RandomAccessFile/FileChannel open. The defect is readChannel's cleanup path closing a handle on an early return / before it was opened.",
+    "fix_pr": 5626,
+    "fix_commit": "94c346349a7c",
+    "fix_summary": "File.readChannel's failure/cleanup path could close a file that had not been opened (or close it twice) when an early return / exception occurred during setup, causing spurious failures. Fix: only close the file if it was actually opened (don't close an unopened file in readChannel)."
+  },
+  "grading": {
+    "full_must_name": ["readChannel"],
+    "mechanism_keywords": ["resource", "close", "unopened", "not opened", "early return", "exception", "RandomAccessFile", "FileChannel", "cleanup", "lifecycle", "readChannel"],
+    "decoy_markers": ["close()", "use{}", "RandomAccessFile open", "FileChannel"]
+  },
+  "admission": {
+    "note": "Authored from PR #5626 diff. crash != cause: the failure (e.g. curl WebSocket timeout on Linux) surfaces at the close/use site; the cause is readChannel's cleanup closing a handle it never opened on an early path. Decoy = the close call. Pure Kotlin-LANGUAGE instance (coroutine/JVM resource handling). Run baseline first.",
+    "baseline_full_hit_rate_max": 0.5
+  },
+  "provenance": "https://github.com/ktorio/ktor/pull/5626 — Don't close unopened file in readChannel; fix 94c346349a7c, base 3ccad96fbb89."
+}

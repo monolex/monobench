@@ -11,6 +11,11 @@ results/*/
 mcp-*.json
 .DS_Store
 
+# transient harness/runtime state (not source)
+.matrix-state
+.sweep-stop
+.antigravitycli/
+
 # test fixtures are NOT run artifacts — keep them tracked despite *.jsonl above
 # (src/telemetry.rs include_str!s agy-mixed.jsonl; CI `cargo test` needs it committed)
 !tests/fixtures/
