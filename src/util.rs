@@ -42,6 +42,10 @@ pub fn arm_code(tool: &str) -> &'static str {
 pub struct Arm {
     pub arm: String,
     pub tool: String,
+    /// Tool version (semver) parsed from the label's `<tool>-<version>-…` segment, e.g. monogram
+    /// `0.52.1`. Empty for baseline, for tools without a `version_bin`, and for legacy labels
+    /// recorded before version capture existed.
+    pub version: String,
     pub cli: String,
     pub model: String,
     pub effort: String,
@@ -68,9 +72,11 @@ pub fn parse_arm(label: &str) -> Arm {
     if let Some(i) = seg[..body_end].iter().position(|s| is_cli_token(s)) {
         if i + 1 < body_end {
             let model = seg[i + 1..body_end].join("-");
+            let (tool, version) = split_tool_version(&seg[..i]);
             return Arm {
                 arm: no_run.into(),
-                tool: seg[..i].join("-"),
+                tool,
+                version,
                 cli: seg[i].into(),
                 model,
                 effort: effort.into(),
@@ -83,9 +89,11 @@ pub fn parse_arm(label: &str) -> Arm {
         .position(|s| is_extended_model_start(s))
     {
         let model = seg[i..body_end].join("-");
+        let (tool, version) = split_tool_version(&seg[..i]);
         return Arm {
             arm: no_run.into(),
-            tool: seg[..i].join("-"),
+            tool,
+            version,
             cli: default_cli_for_model(&model),
             model,
             effort: effort.into(),
@@ -96,17 +104,53 @@ pub fn parse_arm(label: &str) -> Arm {
         None => Arm {
             arm: no_run.into(),
             tool: no_run.into(),
+            version: String::new(),
             cli: "claude".into(),
             model: "opus".into(),
             effort: String::new(),
         },
-        Some(i) => Arm {
-            arm: no_run.into(),
-            tool: seg[..i].join("-"),
-            cli: default_cli_for_model(seg[i]),
-            model: seg[i].into(),
-            effort: effort.into(),
-        },
+        Some(i) => {
+            let (tool, version) = split_tool_version(&seg[..i]);
+            Arm {
+                arm: no_run.into(),
+                tool,
+                version,
+                cli: default_cli_for_model(seg[i]),
+                model: seg[i].into(),
+                effort: effort.into(),
+            }
+        }
+    }
+}
+
+/// Split a trailing semver-shaped segment off the tool region:
+/// `["monogram","0.52.1"]` → (`monogram`, `0.52.1`); `["monogram","mcp","0.52.1"]` →
+/// (`monogram-mcp`, `0.52.1`). Requires a tool name *before* the version, so a lone version is
+/// never stolen. Legacy tool regions with no version segment → (joined tool, "").
+fn split_tool_version(tool_seg: &[&str]) -> (String, String) {
+    if tool_seg.len() >= 2 {
+        if let Some(last) = tool_seg.last() {
+            if is_version_token(last) {
+                return (
+                    tool_seg[..tool_seg.len() - 1].join("-"),
+                    (*last).to_string(),
+                );
+            }
+        }
+    }
+    (tool_seg.join("-"), String::new())
+}
+
+/// A semver-shaped token: a numeric major, a dot, then anything — `0.52.1`, `1.0`, `0.52.1+abc`.
+/// Used ONLY on the tool region (before the CLI token), so a dotted *model* like `gpt-5.4` is never
+/// mistaken for a tool version.
+fn is_version_token(s: &str) -> bool {
+    let mut parts = s.splitn(2, '.');
+    match (parts.next(), parts.next()) {
+        (Some(major), Some(_rest)) => {
+            !major.is_empty() && major.bytes().all(|b| b.is_ascii_digit())
+        }
+        _ => false,
     }
 }
 
@@ -154,13 +198,55 @@ fn strip_run_suffix(s: &str) -> &str {
     s
 }
 
-pub fn full_arm_name(tool: &str, cli: &str, model: &str, effort: &str) -> String {
-    let mut n = format!("{tool}-{cli}-{model}");
+pub fn full_arm_name(tool: &str, version: &str, cli: &str, model: &str, effort: &str) -> String {
+    let mut n = String::from(tool);
+    if !version.is_empty() {
+        n.push('-');
+        n.push_str(version);
+    }
+    n.push('-');
+    n.push_str(cli);
+    n.push('-');
+    n.push_str(model);
     if !effort.is_empty() {
         n.push('-');
         n.push_str(effort);
     }
     n
+}
+
+/// Resolve a tool binary on PATH, follow symlinks, and read its OpenCLIs-install semver from the
+/// canonical path `…/versions/<name>/<semver>/<ts>/…`. Returns "" when the binary is missing or is
+/// not OpenCLIs-installed (e.g. a `target/debug` or worktree build) — it NEVER fabricates a version.
+/// This is the monogram on PATH at run start, the same one a CLI-delivered solver invokes.
+pub fn capture_semver(bin: &str) -> String {
+    resolve_on_path(bin)
+        .as_deref()
+        .and_then(semver_from_install_path)
+        .unwrap_or_default()
+}
+
+fn resolve_on_path(bin: &str) -> Option<std::path::PathBuf> {
+    let out = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("command -v {bin} 2>/dev/null"))
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if p.is_empty() {
+        return None;
+    }
+    std::fs::canonicalize(p).ok()
+}
+
+fn semver_from_install_path(p: &std::path::Path) -> Option<String> {
+    let comps: Vec<&str> = p.to_str()?.split('/').collect();
+    let i = comps.iter().position(|&c| c == "versions")?;
+    let ver = comps.get(i + 2)?; // versions/<name>/<semver>/…
+    is_version_token(ver).then(|| (*ver).to_string())
 }
 
 pub fn env_name(cli: &str, model: &str, effort: &str) -> String {
@@ -263,8 +349,8 @@ pub fn default_cli_for_model(model: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        cmd_has_unquoted_pipe, cmd_has_word, cmd_word_pos, median_f, median_i, parse_arm,
-        word_in_command_position,
+        cmd_has_unquoted_pipe, cmd_has_word, cmd_word_pos, full_arm_name, median_f, median_i,
+        parse_arm, word_in_command_position,
     };
 
     #[test]
@@ -342,6 +428,76 @@ mod tests {
         assert_eq!(a.cli, "agy");
         assert_eq!(a.model, "agy");
         assert_eq!(a.effort, "low");
+    }
+
+    #[test]
+    fn reads_semver_from_openclis_install_path() {
+        use std::path::Path;
+        // canonical OpenCLIs layout: …/versions/<name>/<semver>/<timestamp>/<name>/<bin>
+        assert_eq!(
+            super::semver_from_install_path(Path::new(
+                "/Users/x/.openclis/versions/monogram/0.52.1/2026-05-24-041040/monogram/monogram"
+            )),
+            Some("0.52.1".to_string())
+        );
+        // a non-OpenCLIs build (target/debug, worktree) has no version to read → None, never faked.
+        assert_eq!(
+            super::semver_from_install_path(Path::new("/repo/target/debug/monogram")),
+            None
+        );
+    }
+
+    #[test]
+    fn parses_and_separates_tool_version() {
+        let a = parse_arm("monogram-0.52.1-claude-haiku-r1-t1779701244954");
+        assert_eq!(a.tool, "monogram");
+        assert_eq!(a.version, "0.52.1");
+        assert_eq!(a.cli, "claude");
+        assert_eq!(a.model, "haiku");
+        assert_eq!(a.arm, "monogram-0.52.1-claude-haiku");
+    }
+
+    #[test]
+    fn version_separates_multiword_tool() {
+        let a = parse_arm("monogram-mcp-0.52.1-agy-claude-opus-4.1-low-r2");
+        assert_eq!(a.tool, "monogram-mcp");
+        assert_eq!(a.version, "0.52.1");
+        assert_eq!(a.cli, "agy");
+        assert_eq!(a.model, "claude-opus-4.1");
+        assert_eq!(a.effort, "low");
+    }
+
+    #[test]
+    fn legacy_label_has_empty_version() {
+        // Runs recorded before version capture parse identically to before, with version "".
+        let a = parse_arm("monogram-claude-haiku-r1");
+        assert_eq!(a.tool, "monogram");
+        assert_eq!(a.version, "");
+        assert_eq!(a.cli, "claude");
+        assert_eq!(a.model, "haiku");
+    }
+
+    #[test]
+    fn model_dot_version_is_not_mistaken_for_tool_version() {
+        // `5.4` lives in the MODEL region (after the cli token) and must NOT become the arm version.
+        let a = parse_arm("baseline-codex-gpt-5.4-mini-low-r1");
+        assert_eq!(a.tool, "baseline");
+        assert_eq!(a.version, "");
+        assert_eq!(a.model, "gpt-5.4-mini");
+    }
+
+    #[test]
+    fn full_arm_name_round_trips_version() {
+        let lbl = full_arm_name("monogram", "0.52.1", "claude", "haiku", "");
+        assert_eq!(lbl, "monogram-0.52.1-claude-haiku");
+        let a = parse_arm(&lbl);
+        assert_eq!(a.tool, "monogram");
+        assert_eq!(a.version, "0.52.1");
+        // No version → no segment, identical to the legacy form.
+        assert_eq!(
+            full_arm_name("baseline", "", "claude", "haiku", "low"),
+            "baseline-claude-haiku-low"
+        );
     }
 
     #[test]

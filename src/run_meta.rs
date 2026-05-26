@@ -14,6 +14,9 @@ pub struct StartMeta<'a> {
     pub model: &'a str,
     pub effort: &'a str,
     pub via: &'a str,
+    /// Tool version (e.g. monogram semver) captured at run start; None when the arm has no
+    /// `version_bin` (baseline) or the binary is not OpenCLIs-installed (no semver to read).
+    pub monogram_version: Option<&'a str>,
     pub repeat_index: usize,
     pub repeat_total: Option<usize>,
     pub tag: Option<&'a str>,
@@ -56,6 +59,9 @@ pub fn write_start(out: &Path, meta: StartMeta<'_>) {
     });
     if let Some(total) = meta.repeat_total {
         v["repeat_total"] = json!(total);
+    }
+    if let Some(ver) = clean_optional(meta.monogram_version) {
+        v["monogram_version"] = json!(ver);
     }
     if let Some(tag) = clean_optional(meta.tag) {
         v["tag"] = json!(tag);

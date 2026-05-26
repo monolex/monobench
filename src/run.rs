@@ -699,7 +699,18 @@ pub fn run(
         .map(|v| v == "1")
         .unwrap_or(false);
 
-    let label = full_arm_name(arm, &cli, model, &effort);
+    // Capture the tool's version (e.g. monogram semver) so runs from different builds form DISTINCT
+    // arms instead of silently averaging together. `version_bin` is declared per tool.json; baseline
+    // omits it → no version segment, identical to legacy labels. Empty when not OpenCLIs-installed.
+    let tool_version = {
+        let vb = field("version_bin");
+        if vb.is_empty() {
+            String::new()
+        } else {
+            crate::util::capture_semver(&vb)
+        }
+    };
+    let label = full_arm_name(arm, &tool_version, &cli, model, &effort);
     let runid = unique_runid(&out, &label, run_no);
 
     // Unique-key pre-flight: runid (<tool>-<cli>-<model>-rN-t<start_ms>) is the ONLY key for
@@ -763,6 +774,11 @@ pub fn run(
             model,
             effort: &effort,
             via: &via,
+            monogram_version: if tool_version.is_empty() {
+                None
+            } else {
+                Some(&tool_version)
+            },
             repeat_index: run_no,
             repeat_total,
             tag,

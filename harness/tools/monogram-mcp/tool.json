@@ -8,5 +8,6 @@
   "skill": "skill-mcp.md",
   "deliver": "mcp",
   "mcp": { "command": "monogram", "args": ["serve"] },
+  "version_bin": "monogram",
   "forfeit_grep": ""
 }
