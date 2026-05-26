@@ -7,5 +7,6 @@
   ],
   "skill": "skill-discover.md",
   "deliver": "cli",
+  "version_bin": "monogram",
   "forfeit_grep": ""
 }

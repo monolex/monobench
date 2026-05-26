@@ -70,6 +70,16 @@ fn arow(
     )
 }
 
+/// Arm name as shown in reports: the tool, with ` @<version>` appended when a version was captured.
+/// Different versions render as different arm rows so their medians never blend together.
+fn arm_display(a: &Arm) -> String {
+    if a.version.is_empty() {
+        a.tool.clone()
+    } else {
+        format!("{} @{}", a.tool, a.version)
+    }
+}
+
 fn envs_in_order(runs: &[&RunStats]) -> Vec<String> {
     let mut envs: Vec<(String, String, String, String)> = vec![];
     for r in runs {
@@ -93,7 +103,7 @@ fn report_dims(runs: &[&RunStats]) -> (usize, usize, usize) {
     let mut max_arm = visible_len("arm");
     for r in runs {
         let a = parse_arm(&r.label);
-        max_arm = max_arm.max(visible_len(&a.tool));
+        max_arm = max_arm.max(visible_len(&arm_display(&a)));
     }
     let label_w = max_run.max(28).min(MAX_W - 53);
     let arm_w = max_arm.max(20).min(MAX_W - 59);
@@ -236,8 +246,9 @@ pub fn report(root: &Path, id: &str, runs: &[RunStats]) {
         let mut arm_keys: Vec<String> = vec![];
         for r in &ok {
             let a = parse_arm(&r.label);
-            if env_name(&a.cli, &a.model, &a.effort) == *env && !arm_keys.contains(&a.tool) {
-                arm_keys.push(a.tool);
+            let key = arm_display(&a);
+            if env_name(&a.cli, &a.model, &a.effort) == *env && !arm_keys.contains(&key) {
+                arm_keys.push(key);
             }
         }
         arm_keys.sort_by(|a, b| {
@@ -250,12 +261,12 @@ pub fn report(root: &Path, id: &str, runs: &[RunStats]) {
                 .iter()
                 .filter(|r| {
                     let a = parse_arm(&r.label);
-                    env_name(&a.cli, &a.model, &a.effort) == *env && a.tool == arm
+                    env_name(&a.cli, &a.model, &a.effort) == *env && arm_display(&a) == arm
                 })
                 .collect();
             let a0 = parse_arm(&v[0].label);
             let is_tool = a0.tool != "baseline";
-            let name = a0.tool.clone();
+            let name = arm_display(&a0);
             let measured: Vec<&&RunStats> =
                 v.iter().filter(|r| r.calls.is_some()).copied().collect();
             let unused = if is_tool {
@@ -422,7 +433,7 @@ pub fn summary(insts: &[(String, Vec<RunStats>)]) {
     for (_, runs) in insts {
         for r in runs.iter().filter(gradeable) {
             let a = parse_arm(&r.label);
-            let d = full_arm_name(&a.tool, &a.cli, &a.model, &a.effort);
+            let d = full_arm_name(&a.tool, &a.version, &a.cli, &a.model, &a.effort);
             if !arms.iter().any(|(x, _, _, _, _)| x == &d) {
                 arms.push((d, a.tool, a.cli, a.model, a.effort));
             }
@@ -440,7 +451,7 @@ pub fn summary(insts: &[(String, Vec<RunStats>)]) {
         let mut n = 0;
         for r in runs.iter().filter(gradeable) {
             let a = parse_arm(&r.label);
-            if full_arm_name(&a.tool, &a.cli, &a.model, &a.effort) == disp {
+            if full_arm_name(&a.tool, &a.version, &a.cli, &a.model, &a.effort) == disp {
                 n += 1;
                 if r.grade == "FULL" {
                     full += 1;
@@ -454,7 +465,9 @@ pub fn summary(insts: &[(String, Vec<RunStats>)]) {
             .filter(gradeable)
             .filter_map(|r| {
                 let a = parse_arm(&r.label);
-                if full_arm_name(&a.tool, &a.cli, &a.model, &a.effort) == disp && r.time > 0 {
+                if full_arm_name(&a.tool, &a.version, &a.cli, &a.model, &a.effort) == disp
+                    && r.time > 0
+                {
                     Some(r.time)
                 } else {
                     None
