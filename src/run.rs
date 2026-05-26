@@ -1229,9 +1229,84 @@ pub fn run(
                 print_grade(&grade_jsonl(&inst, &f.to_string_lossy()));
             }
         }
+        ("direct", "grok") => {
+            // grok -p <prompt> --output-format json → {text, stopReason, sessionId, requestId, thought}.
+            // No per-turn token split or cost (OAuth subscription, single model grok-build); telemetry
+            // comes from the session's signals.json, located via the returned sessionId.
+            let prompt = format!("{sys}\n\n{q}\n");
+            let ans = out.join(format!("{runid}.answer.txt"));
+            let envelope = out.join(format!("{runid}.grok.json"));
+            let err = out.join(format!("{runid}.err"));
+            let grok_model = if model.is_empty() {
+                "grok-build"
+            } else {
+                model
+            };
+            let git_deny = install_git_deny_wrapper(&runid);
+            let t0 = std::time::Instant::now();
+            let mut cmd = Command::new("grok");
+            cmd.current_dir(&clone)
+                .arg("-p")
+                .arg(&prompt)
+                .arg("--cwd")
+                .arg(&clone)
+                .arg("--model")
+                .arg(grok_model)
+                .args([
+                    "--output-format",
+                    "json",
+                    "--always-approve",
+                    "--no-subagents",
+                ]);
+            if !effort.is_empty() {
+                cmd.arg("--effort").arg(&effort);
+            }
+            for e in STRIP_ENV {
+                cmd.env_remove(e);
+            }
+            if let Some(dir) = &git_deny {
+                prepend_path(&mut cmd, dir);
+            }
+            cmd.stdout(File::create(&envelope).unwrap())
+                .stderr(File::create(&err).unwrap());
+            let status = cmd.status();
+            let dur = t0.elapsed().as_secs();
+            // Envelope → answer text for grading; keep sessionId to find signals.json.
+            let (answer, session_id) = parse_grok_envelope(&envelope);
+            std::fs::write(&ans, &answer).ok();
+            let (exit_status, exit_success, runner_error) = match status {
+                Ok(s) => (
+                    s.code(),
+                    s.success(),
+                    if s.success() {
+                        None
+                    } else {
+                        Some(format!("grok exited with {s}"))
+                    },
+                ),
+                Err(e) => (None, false, Some(format!("failed to run grok: {e}"))),
+            };
+            let meter = grok_meter(
+                dur,
+                session_id.as_deref(),
+                grok_model,
+                &effort,
+                exit_status,
+                exit_success,
+                runner_error,
+            );
+            std::fs::write(out.join(format!("{runid}.meter.json")), meter).ok();
+            if !quiet {
+                print_grade(&grade_text_file(
+                    &inst,
+                    &ans.to_string_lossy(),
+                    &out.join(format!("{runid}.meter.json")).to_string_lossy(),
+                ));
+            }
+        }
         ("direct", other) => {
             eprintln!(
-                "unsupported direct cli '{other}' (supported: claude, codex, agy; use --via niia for other CLIs)"
+                "unsupported direct cli '{other}' (supported: claude, codex, agy, grok; use --via niia for other CLIs)"
             );
             return 1;
         }
@@ -1618,6 +1693,105 @@ fn meter_from_session(x: &Value, dur: u64) -> String {
     .to_string()
 }
 
+/// Parse grok's `--output-format json` envelope `{text, stopReason, sessionId, requestId, thought}`.
+/// Returns (answer_text, session_id); falls back to the raw file contents if it isn't valid JSON.
+fn parse_grok_envelope(path: &Path) -> (String, Option<String>) {
+    let raw = std::fs::read_to_string(path).unwrap_or_default();
+    match serde_json::from_str::<serde_json::Value>(&raw) {
+        Ok(v) => {
+            let text = v
+                .get("text")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string();
+            let sid = v
+                .get("sessionId")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string());
+            // No "text" field → hand grading the raw envelope rather than an empty string.
+            if text.is_empty() {
+                (raw, sid)
+            } else {
+                (text, sid)
+            }
+        }
+        Err(_) => (raw, None),
+    }
+}
+
+/// Locate `~/.grok/sessions/<urlenc-cwd>/<session_id>/signals.json` by unique session id
+/// (avoids reconstructing grok's URL-encoded cwd directory name).
+fn grok_signals_path(session_id: &str) -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    let base = PathBuf::from(home).join(".grok/sessions");
+    for entry in std::fs::read_dir(&base).ok()?.flatten() {
+        let p = entry.path().join(session_id).join("signals.json");
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    None
+}
+
+/// Build a grok meter. grok has no per-turn token split and no cost (OAuth subscription, single
+/// model grok-build), so `tokens`/`cost_usd` are null — never faked. Honest session metrics
+/// (context size, turns, tool calls, duration, TTFT) come from the session's signals.json.
+#[allow(clippy::too_many_arguments)]
+fn grok_meter(
+    dur: u64,
+    session_id: Option<&str>,
+    model_hint: &str,
+    effort: &str,
+    exit_status: Option<i32>,
+    exit_success: bool,
+    runner_error: Option<String>,
+) -> String {
+    let signals: Option<serde_json::Value> = session_id
+        .and_then(grok_signals_path)
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| serde_json::from_str(&s).ok());
+    let g = |k: &str| -> serde_json::Value {
+        signals
+            .as_ref()
+            .and_then(|s| s.get(k).cloned())
+            .unwrap_or(serde_json::Value::Null)
+    };
+    let observed_model = signals
+        .as_ref()
+        .and_then(|s| s.get("primaryModelId"))
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string());
+    let model_enforced = observed_model.as_deref() == Some(model_hint);
+    serde_json::json!({
+        "runner": "grok",
+        "model": model_hint,
+        "requested_model": model_hint,
+        "requested_effort": effort,
+        "observed_model": observed_model,
+        "model_enforced": model_enforced,
+        "effort_enforced": false, // grok-build: supports_reasoning_effort=false
+        "tokens": null,
+        "cost_usd": null,
+        "tokens_available": false,
+        "cost_available": false,
+        "meter_error": "grok exposes session metrics only; no per-turn token split or cost",
+        "signals_available": signals.is_some(),
+        "session_id": session_id,
+        "context_tokens_used": g("contextTokensUsed"),
+        "context_window_tokens": g("contextWindowTokens"),
+        "turns": g("turnCount"),
+        "tool_calls": g("toolCallCount"),
+        "tools_used": g("toolsUsed"),
+        "session_duration_s": g("sessionDurationSeconds"),
+        "avg_ttft_ms": g("avgTimeToFirstTokenMs"),
+        "duration_s": dur,
+        "exit_status": exit_status,
+        "exit_success": exit_success,
+        "runner_error": runner_error
+    })
+    .to_string()
+}
+
 fn empty_codex_meter(dur: u64, session_id: Option<&str>, model_hint: &str, reason: &str) -> String {
     serde_json::json!({
         "session_id": session_id,
@@ -1844,6 +2018,60 @@ mod tests {
         assert_ne!(
             agy_model_norm("Gemini 3.5 Flash (Low)"),
             agy_model_norm("gemini-3.5-flash-medium")
+        );
+    }
+
+    #[test]
+    fn parses_grok_envelope_text_and_session_id() {
+        let p = std::env::temp_dir().join(format!("monobench-grok-env-{}", std::process::id()));
+        std::fs::write(
+            &p,
+            r#"{"text":"ok","stopReason":"EndTurn","sessionId":"019e62dc-aaaa","requestId":"r1","thought":"t"}"#,
+        )
+        .unwrap();
+        let (answer, sid) = super::parse_grok_envelope(&p);
+        assert_eq!(answer, "ok");
+        assert_eq!(sid.as_deref(), Some("019e62dc-aaaa"));
+        // non-JSON stdout falls back to raw text with no session id (grading still sees something)
+        std::fs::write(&p, "raw non-json output").unwrap();
+        let (answer2, sid2) = super::parse_grok_envelope(&p);
+        assert_eq!(answer2, "raw non-json output");
+        assert!(sid2.is_none());
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn grok_meter_never_fakes_tokens_or_cost() {
+        // No session id → signals unavailable; the meter must still never fake tokens/cost.
+        let meter: Value = serde_json::from_str(&super::grok_meter(
+            12,
+            None,
+            "grok-build",
+            "low",
+            Some(0),
+            true,
+            None,
+        ))
+        .unwrap();
+        assert_eq!(meter.get("runner").and_then(Value::as_str), Some("grok"));
+        assert!(meter.get("tokens").unwrap().is_null());
+        assert!(meter.get("cost_usd").unwrap().is_null());
+        assert_eq!(
+            meter.get("tokens_available").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            meter.get("cost_available").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            meter.get("signals_available").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(meter.get("duration_s").and_then(Value::as_u64), Some(12));
+        assert_eq!(
+            meter.get("requested_model").and_then(Value::as_str),
+            Some("grok-build")
         );
     }
 }

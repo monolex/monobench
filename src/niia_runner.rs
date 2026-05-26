@@ -164,6 +164,16 @@ fn command_words(cli: &str, model: &str, effort: &str) -> Vec<String> {
                 words.push("--dangerously-skip-permissions".into());
             }
         }
+        Some("grok") => {
+            if !model.is_empty() && !has_arg(&words, "-m", "--model") {
+                words.push("--model".into());
+                words.push(model.into());
+            }
+            if !effort.is_empty() {
+                words.push("--effort".into());
+                words.push(effort.into());
+            }
+        }
         _ => {}
     }
     words

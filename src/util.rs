@@ -3,7 +3,7 @@ use serde_json::Value;
 use std::io::IsTerminal;
 
 pub const MODELS: [&str; 5] = ["opus", "sonnet", "haiku", "codex", "gemini"];
-pub const CLIS: [&str; 4] = ["claude", "codex", "agy", "gemini"];
+pub const CLIS: [&str; 5] = ["claude", "codex", "agy", "gemini", "grok"];
 const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 
 // palette: yellow → orange → red ONLY (baseline=yellow stands apart from tool arms). Chrome stays in-palette.
@@ -125,6 +125,8 @@ fn is_extended_model_start(s: &str) -> bool {
         || s.starts_with("codex")
         || s == "agy"
         || s.starts_with("agy")
+        || s == "grok"
+        || s.starts_with("grok")
         || s.starts_with('o')
             && s.chars()
                 .skip(1)
@@ -228,6 +230,8 @@ pub fn model_ord(m: &str) -> usize {
             4
         } else if m.starts_with("agy") {
             5
+        } else if m.starts_with("grok") {
+            6
         } else {
             99
         }
@@ -249,6 +253,8 @@ pub fn default_cli_for_model(model: &str) -> String {
         "gemini".into()
     } else if model.starts_with("agy") {
         "agy".into()
+    } else if model.starts_with("grok") {
+        "grok".into()
     } else {
         "claude".into()
     }
@@ -283,6 +289,22 @@ mod tests {
         assert_eq!(b.cli, "codex");
         assert_eq!(b.model, "gpt-5.4-mini");
         assert_eq!(b.effort, "low");
+    }
+
+    #[test]
+    fn parses_grok_cli_labels() {
+        // The cli token "grok" must win over the homonym in the model "grok-build".
+        let a = parse_arm("baseline-grok-grok-build-low-r1-t1779773782544");
+        assert_eq!(a.tool, "baseline");
+        assert_eq!(a.cli, "grok");
+        assert_eq!(a.model, "grok-build");
+        assert_eq!(a.effort, "low");
+
+        let b = parse_arm("monogram-grok-grok-build-medium-r2");
+        assert_eq!(b.tool, "monogram");
+        assert_eq!(b.cli, "grok");
+        assert_eq!(b.model, "grok-build");
+        assert_eq!(b.effort, "medium");
     }
 
     #[test]
