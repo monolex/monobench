@@ -656,8 +656,7 @@ fn install_prepared_monogram_snapshot(
             &format!("prepared-link log={}", log_path.display()),
         );
         if let Some(parent) = dst_db.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("{}: {e}", parent.display()))?;
+            std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
         }
         // The worktree is fresh; remove any pre-existing destination
         // (including its WAL/SHM sidecars) before linking.
@@ -667,11 +666,7 @@ fn install_prepared_monogram_snapshot(
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink(&snap_db, &dst_db).map_err(|e| {
-                format!(
-                    "symlink {} -> {}: {e}",
-                    snap_db.display(),
-                    dst_db.display()
-                )
+                format!("symlink {} -> {}: {e}", snap_db.display(), dst_db.display())
             })?;
         }
         #[cfg(not(unix))]
@@ -967,6 +962,10 @@ pub fn run(
     // 1. repo: worktree-isolated (parallel-safe) or shared clone
     let _wt_guard;
     let clone: PathBuf;
+    // Repo base clone, kept in scope at the per-CLI call sites so the sandbox jail can
+    // re-allow it (git-worktree's `.git` file points back to the base). Some in isolate
+    // mode, None in shared-clone mode (which doesn't use git-worktree).
+    let repo_base: Option<PathBuf>;
     if isolate {
         running_guard.set("clone", "worktree");
         let base = PathBuf::from(format!("{work}/{}-base", repo_basename(&repo_url)));
@@ -1017,6 +1016,10 @@ pub fn run(
         }
         drop(flk); // release cross-process base lock before the (long) run
         clone = wt.clone(); // ${REPO} is substituted from `clone` directly (no process-global env — matrix runs threads)
+        // Capture base BEFORE it moves into _wt_guard, so agy_read_jail_profile can re-allow
+        // reads on the per-repo base clone (per-repo allow ⇒ still structurally safe, since
+        // a netty agent gets netty-base only, not php-src-base).
+        repo_base = Some(base.clone());
         _wt_guard = Some(Worktree {
             base,
             wt,
@@ -1032,6 +1035,9 @@ pub fn run(
                 return 1;
             }
         };
+        // Shared-clone mode doesn't use git-worktree, so there's no separate base-clone
+        // path to re-allow in the jail.
+        repo_base = None;
         _wt_guard = None;
     }
 
@@ -1203,7 +1209,7 @@ pub fn run(
             // kernel-level git block (+ answer-key/.git read-jail) — codex has no usable native
             // command-deny and runs with --dangerously-bypass-…-sandbox, so the PATH shim alone
             // is bypassable. Wrap in sandbox-exec like agy.
-            let jail = agy_read_jail_profile(root, &runid);
+            let jail = agy_read_jail_profile(root, &runid, &clone, repo_base.as_deref());
             let t0 = std::time::Instant::now();
             let mut cmd = match &jail {
                 Some(p) => {
@@ -1288,7 +1294,7 @@ pub fn run(
             // repo under test must be passed as a workspace dir (--add-dir) or agy indexes 0 files
             // and roams the filesystem. The sandbox-exec read-jail then stops it reading the
             // benchmark's own answer files it would otherwise find (instance.json / ground_truth.md).
-            let jail = agy_read_jail_profile(root, &runid);
+            let jail = agy_read_jail_profile(root, &runid, &clone, repo_base.as_deref());
             let mut cmd = match &jail {
                 Some(p) => {
                     let mut c = Command::new("sandbox-exec");
@@ -1405,7 +1411,7 @@ pub fn run(
             // kernel-level git block (+ read-jail) in addition to --disallowedTools "Bash(git:*)":
             // the matcher misses compound/absolute git (`cd x && /usr/bin/git log`); sandbox-exec
             // closes that hole for every invocation.
-            let jail = agy_read_jail_profile(root, &runid);
+            let jail = agy_read_jail_profile(root, &runid, &clone, repo_base.as_deref());
             let mut cmd = match &jail {
                 Some(p) => {
                     let mut c = Command::new("sandbox-exec");
@@ -1471,7 +1477,7 @@ pub fn run(
             let solver_deny = install_solver_deny_wrapper(&runid, prepared_monogram_guard);
             // kernel-level git block (+ read-jail); grok runs --always-approve so the PATH shim
             // alone is bypassable. Wrap in sandbox-exec like agy.
-            let jail = agy_read_jail_profile(root, &runid);
+            let jail = agy_read_jail_profile(root, &runid, &clone, repo_base.as_deref());
             let t0 = std::time::Instant::now();
             let mut cmd = match &jail {
                 Some(p) => {
@@ -1851,16 +1857,35 @@ fn prepend_path(cmd: &mut Command, dir: &Path) {
     }
 }
 
-/// macOS `sandbox-exec` read-jail for agy (used by both the direct and niia runners). agy ignores
-/// the process cwd and roams the filesystem under `--dangerously-skip-permissions`; left unjailed
-/// it reads the benchmark's own answer files (`root/instances/<id>/{instance.json,ground_truth.md}`
-/// and `root/research`), turning a "solve" into a contaminated lookup. This profile lets agy run
-/// and read everything else (its config, the `--add-dir` clone, the network) but DENIES reading
-/// those answer dirs — both the canonical and raw `root` paths, to cover symlinked roots.
+/// macOS `sandbox-exec` read-jail for every solver (claude/agy/codex/grok), used by both the
+/// direct and niia runners. The profile starts from `(allow default)` (industry pattern — pure
+/// deny-default breaks language toolchains and package managers) and layers targeted denies
+/// plus a per-run re-allow:
 ///
-/// Returns the profile path, or `None` on non-macOS / write failure, in which case the caller runs
-/// agy unwrapped rather than failing the run (degrade, don't break).
-pub(crate) fn agy_read_jail_profile(root: &Path, tag: &str) -> Option<PathBuf> {
+///   - DENIES git exec + `.git` reads → the agent can't read the fix-commit from history
+///   - DENIES `<root>/instances` + `<root>/research` → can't read the benchmark's answer keys
+///   - DENIES `/tmp/monobench-work/` reads → STRUCTURAL: sibling worktrees become physically
+///     invisible to the agent regardless of how it asks (`find`, absolute path, anything)
+///   - RE-ALLOWS the assigned worktree (more-specific subpath wins over the broader deny under
+///     SBPL precedence — verified empirically) → the agent has full read access to ITS OWN
+///     worktree
+///   - RE-ALLOWS the repo's base clone if known → git-worktree's `.git` file points back to
+///     the base repo's `.git/worktrees/<wt>/`; without this allow, the agent can't follow that
+///     pointer for legitimate ops. Per-REPO not per-instance, so cross-instance contamination
+///     stays blocked (netty agent reads netty-base, not php-src-base).
+///
+/// `repo_base = None` (shared-clone mode or niia path without base in scope) yields a profile
+/// without the base re-allow. Shared-clone mode doesn't use git-worktree so this is correct;
+/// the niia path accepts a slightly tighter policy as a known limitation.
+///
+/// Returns the profile path, or `None` on non-macOS / write failure, in which case the caller
+/// runs the solver unwrapped rather than failing the run (degrade, don't break).
+pub(crate) fn agy_read_jail_profile(
+    root: &Path,
+    tag: &str,
+    assigned_worktree: &Path,
+    repo_base: Option<&Path>,
+) -> Option<PathBuf> {
     if !cfg!(target_os = "macos") {
         return None;
     }
@@ -1886,6 +1911,27 @@ pub(crate) fn agy_read_jail_profile(root: &Path, tag: &str) -> Option<PathBuf> {
                 base.join(sub).to_string_lossy()
             ));
         }
+    }
+    // STRUCTURAL cross-instance contamination guard: deny all reads under monobench-work, then
+    // re-allow only OUR assigned worktree. SBPL precedence: more-specific allow beats broader
+    // deny. Verified by `sandbox-exec` precedence test on macOS 15.4 (2026-05-28).
+    profile.push_str(
+        "; structural cross-instance contamination guard:\n\
+         (deny file-read* (subpath \"/private/tmp/monobench-work\"))\n\
+         (deny file-read* (subpath \"/tmp/monobench-work\"))\n",
+    );
+    let assigned_canon = std::fs::canonicalize(assigned_worktree)
+        .unwrap_or_else(|_| assigned_worktree.to_path_buf());
+    profile.push_str(&format!(
+        "(allow file-read* (subpath {:?}))\n",
+        assigned_canon.to_string_lossy()
+    ));
+    if let Some(rb) = repo_base {
+        let rb_canon = std::fs::canonicalize(rb).unwrap_or_else(|_| rb.to_path_buf());
+        profile.push_str(&format!(
+            "(allow file-read* (subpath {:?}))\n",
+            rb_canon.to_string_lossy()
+        ));
     }
     let path = std::env::temp_dir().join(format!("monobench-agy-jail-{tag}.sb"));
     std::fs::write(&path, profile).ok()?;
@@ -2273,7 +2319,10 @@ mod tests {
     fn solver_wrapper_blocks_prepared_monogram_mutation_commands() {
         let dir = install_solver_deny_wrapper("prepared-mutation-guard-test", true).unwrap();
         for args in [["prune", "--force"], ["boot", "init"]] {
-            let out = Command::new(dir.join("monogram")).args(args).output().unwrap();
+            let out = Command::new(dir.join("monogram"))
+                .args(args)
+                .output()
+                .unwrap();
             assert_eq!(out.status.code(), Some(126));
             let stderr = String::from_utf8_lossy(&out.stderr);
             assert!(stderr.contains("prepared monogram index is already installed"));
@@ -2377,7 +2426,10 @@ mod tests {
         assert_eq!(target, snap_db, "symlink target mismatch");
         // Confirm the log narrates the portable path, not the legacy one.
         let log = std::fs::read_to_string(&log_path).unwrap_or_default();
-        assert!(log.contains("portable"), "log missing portable marker: {log}");
+        assert!(
+            log.contains("portable"),
+            "log missing portable marker: {log}"
+        );
         assert!(
             !log.contains("rewriting monogram DB paths"),
             "portable install must NOT rewrite paths: {log}"
@@ -2519,5 +2571,85 @@ mod tests {
             meter.get("requested_model").and_then(Value::as_str),
             Some("grok-build")
         );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // Structural cross-instance sandbox guard tests (added 2026-05-28)
+    //
+    // Pin the new agy_read_jail_profile behavior so a future edit can't silently
+    // regress the deny-on-monobench-work + per-instance allow pattern.
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn agy_jail_profile_denies_monobench_work_subpaths() {
+        if !cfg!(target_os = "macos") {
+            return; // function returns None on other platforms
+        }
+        let root = std::env::temp_dir().join(format!("mb-jail-test-{}", std::process::id()));
+        std::fs::create_dir_all(&root).ok();
+        let wt = std::env::temp_dir()
+            .join("monobench-work/wt/some-instance/baseline-r1-t1");
+        let base = std::env::temp_dir().join("monobench-work/some-repo-base");
+        let p = super::agy_read_jail_profile(&root, "test-deny-mw", &wt, Some(&base))
+            .expect("profile should be created on macOS");
+        let body = std::fs::read_to_string(&p).expect("profile readable");
+        assert!(
+            body.contains("(deny file-read* (subpath \"/private/tmp/monobench-work\"))"),
+            "expected /private/tmp/monobench-work deny, got:\n{body}"
+        );
+        assert!(
+            body.contains("(deny file-read* (subpath \"/tmp/monobench-work\"))"),
+            "expected /tmp/monobench-work deny, got:\n{body}"
+        );
+        assert!(
+            body.contains("(allow file-read* (subpath"),
+            "expected at least one allow file-read* line, got:\n{body}"
+        );
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn agy_jail_profile_skips_repo_base_allow_when_none() {
+        if !cfg!(target_os = "macos") {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("mb-jail-test2-{}", std::process::id()));
+        std::fs::create_dir_all(&root).ok();
+        let wt = std::env::temp_dir().join("monobench-work/wt/x/r-t1");
+        let p = super::agy_read_jail_profile(&root, "test-no-base", &wt, None)
+            .expect("profile should be created");
+        let body = std::fs::read_to_string(&p).expect("profile readable");
+        // Exactly ONE allow file-read* line (the assigned worktree), no base allow.
+        let allow_count = body.matches("(allow file-read*").count();
+        assert_eq!(
+            allow_count, 1,
+            "expected 1 allow file-read* line, got {allow_count}:\n{body}"
+        );
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn agy_jail_profile_keeps_existing_git_and_answer_key_denies() {
+        if !cfg!(target_os = "macos") {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("mb-jail-test3-{}", std::process::id()));
+        std::fs::create_dir_all(&root).ok();
+        let wt = std::env::temp_dir().join("monobench-work/wt/y/r-t1");
+        let p = super::agy_read_jail_profile(&root, "test-existing-denies", &wt, None)
+            .expect("profile should be created");
+        let body = std::fs::read_to_string(&p).expect("profile readable");
+        // Pre-existing protections must still be present.
+        assert!(
+            body.contains("(deny process-exec* (regex #\"(^|/)git$\"))"),
+            "git deny missing:\n{body}"
+        );
+        assert!(
+            body.contains("(deny file-read* (regex #\"(^|/)\\.git(/|$)\"))"),
+            ".git deny missing:\n{body}"
+        );
+        assert!(body.contains("/instances"), "instances deny missing:\n{body}");
+        assert!(body.contains("/research"), "research deny missing:\n{body}");
+        let _ = std::fs::remove_file(p);
     }
 }

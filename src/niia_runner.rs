@@ -481,7 +481,9 @@ pub fn run(
     // Once the niia path actually waits for agy (below), agy runs for real and — like the direct
     // path — would otherwise roam and read the answer files. Jail its reads the same way.
     let agy_jail = if cli == "agy" {
-        crate::run::agy_read_jail_profile(root, &run_slug)
+        // niia path doesn't have the repo base clone in scope here, so pass None for repo_base
+        // (slightly tighter policy: no re-allow on the base clone, only the worktree itself).
+        crate::run::agy_read_jail_profile(root, &run_slug, repo, None)
     } else {
         None
     };
@@ -527,10 +529,7 @@ pub fn run(
         wait_idle(&session)?;
     }
     if prepared_monogram_guard {
-        write(
-            &session,
-            "export MONOGRAM_PREPARED_INDEX=1\r",
-        )?;
+        write(&session, "export MONOGRAM_PREPARED_INDEX=1\r")?;
         wait_idle(&session)?;
     }
 
