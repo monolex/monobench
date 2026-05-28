@@ -97,7 +97,7 @@ fn wait_idle(session: &str) -> Result<(), String> {
     run_status(&["wait-idle", "--session", session])
 }
 
-fn shell_quote(s: &str) -> String {
+pub(crate) fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
@@ -227,7 +227,7 @@ fn agy_print_command(
     prompt_file: &Path,
     out_prefix: &Path,
     repo: &Path,
-    jail: Option<&Path>,
+    jail_prefix: &str,
     model: &str,
     effort: &str,
 ) -> String {
@@ -250,14 +250,11 @@ fn agy_print_command(
         words.push("--print-timeout".into());
         words.push(std::env::var("MONOBENCH_AGY_TIMEOUT").unwrap_or_else(|_| "20m".into()));
     }
-    // macOS read-jail prefix: agy still runs + reads the repo, but cannot read the benchmark
-    // answer files (root/instances|research). None ⇒ run unwrapped (non-macOS / profile failed).
-    let prefix = match jail {
-        Some(p) => format!("sandbox-exec -f {} ", shell_quote(&p.to_string_lossy())),
-        None => String::new(),
-    };
+    // Cross-platform read-jail prefix: agy still runs + reads the repo, but cannot read the
+    // benchmark answer files (root/instances|research) or sibling worktrees. Empty string ⇒
+    // run unwrapped (sandbox unavailable on this OS or profile generation failed).
     if !has_arg(&words, "-p", "--print") && !has_option(&words, "--prompt") {
-        let mut cmd = format!("{prefix}{}", shell_join(&words));
+        let mut cmd = format!("{jail_prefix}{}", shell_join(&words));
         cmd.push_str(" --print ");
         cmd.push_str(&format!(
             "\"$(cat {})\"",
@@ -265,7 +262,7 @@ fn agy_print_command(
         ));
         return cmd;
     }
-    format!("{prefix}{}", shell_join(&words))
+    format!("{jail_prefix}{}", shell_join(&words))
 }
 
 fn agy_prompt_file(out_prefix: &Path) -> PathBuf {
@@ -480,19 +477,19 @@ pub fn run(
     };
     // Once the niia path actually waits for agy (below), agy runs for real and — like the direct
     // path — would otherwise roam and read the answer files. Jail its reads the same way.
-    let agy_jail = if cli == "agy" {
-        // niia path doesn't have the repo base clone in scope here, so pass None for repo_base
-        // (slightly tighter policy: no re-allow on the base clone, only the worktree itself).
-        crate::run::agy_read_jail_profile(root, &run_slug, repo, None)
+    // niia path doesn't have the repo base clone in scope here, so pass None for repo_base
+    // (slightly tighter policy: no re-allow on the base clone, only the worktree itself).
+    let agy_jail_prefix = if cli == "agy" {
+        crate::run::jailed_solver_shell_prefix(root, &run_slug, repo, None)
     } else {
-        None
+        String::new()
     };
     let spawn = if cli == "agy" {
         agy_print_command(
             agy_prompt.as_deref().unwrap(),
             out_prefix,
             repo,
-            agy_jail.as_deref(),
+            &agy_jail_prefix,
             model,
             effort,
         )
@@ -732,7 +729,7 @@ mod tests {
             prompt_file,
             p,
             Path::new("/tmp/clone"),
-            None,
+            "",
             "gemini-3.5",
             "medium",
         );
@@ -741,8 +738,9 @@ mod tests {
         assert!(cmd.contains("--log-file /tmp/monogram-agy-gemini-3.5-r1-t123.agy.log"));
         assert!(cmd.contains("--print-timeout 20m"));
         assert!(cmd.contains("--print \"$(cat '/tmp/prompt-file.txt')\""));
-        // No jail ⇒ no sandbox-exec prefix.
+        // Empty prefix ⇒ no sandbox-exec / bwrap wrapper.
         assert!(!cmd.contains("sandbox-exec"));
+        assert!(!cmd.contains("bwrap"));
     }
 
     #[test]
@@ -751,12 +749,15 @@ mod tests {
         std::env::remove_var("MONOBENCH_CLI");
         let p = Path::new("/tmp/monogram-agy-x-r1-t1");
         let prompt_file = Path::new("/tmp/pf.txt");
-        let jail = Path::new("/tmp/jail.sb");
+        // The OS-appropriate prefix is built upstream by jailed_solver_shell_prefix; here we
+        // simulate macOS (sandbox-exec) to pin the round-trip behavior of agy_print_command:
+        // any non-empty prefix gets prepended verbatim, so Linux bwrap also flows through.
+        let prefix = "sandbox-exec -f '/tmp/jail.sb' ";
         let cmd = agy_print_command(
             prompt_file,
             p,
             Path::new("/tmp/clone"),
-            Some(jail),
+            prefix,
             "g",
             "low",
         );

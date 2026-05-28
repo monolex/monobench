@@ -1209,16 +1209,9 @@ pub fn run(
             // kernel-level git block (+ answer-key/.git read-jail) — codex has no usable native
             // command-deny and runs with --dangerously-bypass-…-sandbox, so the PATH shim alone
             // is bypassable. Wrap in sandbox-exec like agy.
-            let jail = agy_read_jail_profile(root, &runid, &clone, repo_base.as_deref());
             let t0 = std::time::Instant::now();
-            let mut cmd = match &jail {
-                Some(p) => {
-                    let mut c = Command::new("sandbox-exec");
-                    c.arg("-f").arg(p).arg("codex");
-                    c
-                }
-                None => Command::new("codex"),
-            };
+            let mut cmd =
+                jailed_solver_command("codex", root, &runid, &clone, repo_base.as_deref());
             cmd.arg("exec").arg("-C").arg(&clone).args([
                 "--skip-git-repo-check",
                 "--dangerously-bypass-approvals-and-sandbox",
@@ -1294,15 +1287,8 @@ pub fn run(
             // repo under test must be passed as a workspace dir (--add-dir) or agy indexes 0 files
             // and roams the filesystem. The sandbox-exec read-jail then stops it reading the
             // benchmark's own answer files it would otherwise find (instance.json / ground_truth.md).
-            let jail = agy_read_jail_profile(root, &runid, &clone, repo_base.as_deref());
-            let mut cmd = match &jail {
-                Some(p) => {
-                    let mut c = Command::new("sandbox-exec");
-                    c.arg("-f").arg(p).arg("agy");
-                    c
-                }
-                None => Command::new("agy"),
-            };
+            let mut cmd =
+                jailed_solver_command("agy", root, &runid, &clone, repo_base.as_deref());
             cmd.current_dir(&clone)
                 .arg("--add-dir")
                 .arg(&clone)
@@ -1411,15 +1397,8 @@ pub fn run(
             // kernel-level git block (+ read-jail) in addition to --disallowedTools "Bash(git:*)":
             // the matcher misses compound/absolute git (`cd x && /usr/bin/git log`); sandbox-exec
             // closes that hole for every invocation.
-            let jail = agy_read_jail_profile(root, &runid, &clone, repo_base.as_deref());
-            let mut cmd = match &jail {
-                Some(p) => {
-                    let mut c = Command::new("sandbox-exec");
-                    c.arg("-f").arg(p).arg("claude");
-                    c
-                }
-                None => Command::new("claude"),
-            };
+            let mut cmd =
+                jailed_solver_command("claude", root, &runid, &clone, repo_base.as_deref());
             cmd.current_dir(&clone).arg("-p").arg(&prompt).args([
                 "--output-format",
                 "stream-json",
@@ -1477,16 +1456,9 @@ pub fn run(
             let solver_deny = install_solver_deny_wrapper(&runid, prepared_monogram_guard);
             // kernel-level git block (+ read-jail); grok runs --always-approve so the PATH shim
             // alone is bypassable. Wrap in sandbox-exec like agy.
-            let jail = agy_read_jail_profile(root, &runid, &clone, repo_base.as_deref());
             let t0 = std::time::Instant::now();
-            let mut cmd = match &jail {
-                Some(p) => {
-                    let mut c = Command::new("sandbox-exec");
-                    c.arg("-f").arg(p).arg("grok");
-                    c
-                }
-                None => Command::new("grok"),
-            };
+            let mut cmd =
+                jailed_solver_command("grok", root, &runid, &clone, repo_base.as_deref());
             cmd.current_dir(&clone)
                 .arg("-p")
                 .arg(&prompt)
@@ -1570,16 +1542,9 @@ pub fn run(
             let solver_deny = install_solver_deny_wrapper(&runid, prepared_monogram_guard);
             // kernel-level git block (+ read-jail). opencode walks the filesystem to find project
             // markers; sandbox-exec confines reads to the assigned worktree like the other CLIs.
-            let jail = agy_read_jail_profile(root, &runid, &clone, repo_base.as_deref());
             let t0 = std::time::Instant::now();
-            let mut cmd = match &jail {
-                Some(p) => {
-                    let mut c = Command::new("sandbox-exec");
-                    c.arg("-f").arg(p).arg("opencode");
-                    c
-                }
-                None => Command::new("opencode"),
-            };
+            let mut cmd =
+                jailed_solver_command("opencode", root, &runid, &clone, repo_base.as_deref());
             // opencode run <prompt> [project] -m provider/model --format json
             //   --dangerously-skip-permissions: opencode otherwise auto-rejects every tool call
             //     in non-interactive mode (read/edit/glob/grep/list/bash/external_directory all
@@ -2064,6 +2029,169 @@ pub(crate) fn agy_read_jail_profile(
     let path = std::env::temp_dir().join(format!("monobench-agy-jail-{tag}.sb"));
     std::fs::write(&path, profile).ok()?;
     Some(path)
+}
+
+/// Linux equivalent of `agy_read_jail_profile` — returns bubblewrap arg list (without the
+/// trailing solver binary). Built with the same allow-default + targeted-deny model as the
+/// macOS SBPL profile:
+///
+///   1. `--ro-bind / /` exposes the host read-only as a baseline (so the solver finds libc,
+///      git, its own config dirs, etc.). `--dev /dev` / `--proc /proc` / `--tmpfs /tmp`
+///      reinstate the special filesystems bwrap can't pass through verbatim.
+///   2. The benchmark answer-key dirs (`<root>/instances`, `<root>/research`) are masked with
+///      `--tmpfs` so the solver cannot peek at gold patches even though the read-only root
+///      bind would otherwise expose them.
+///   3. `--tmpfs /tmp/monobench-work` (and `/private/tmp/...` for macOS hosts running these
+///      args under Linux containers) hides sibling worktrees — the *next* arg re-binds ONLY
+///      our assigned worktree, which means siblings simply do not exist inside the sandbox.
+///      `--bind` (writable) lets the solver edit its own worktree.
+///   4. `--tmpfs <worktree>/.git` (and `<repo_base>/.git` if a repo base is allowed) is the
+///      real anti-cheat: tmpfs over the worktree's `.git` marker file replaces it with an
+///      empty directory, which git treats as "not a git repository" — `git log` exits 128 and
+///      the fix-in-history vector is closed even though the git binary itself can still run.
+///   5. `--share-net` keeps the LLM API reachable; `--die-with-parent --new-session` make the
+///      sandbox die cleanly when monobench exits.
+///
+/// Returns `None` on non-Linux. The wrapper `jailed_solver_command` chooses which OS path to
+/// use at runtime so callers don't need cfg gates.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn agy_read_jail_bwrap_args(
+    root: &Path,
+    assigned_worktree: &Path,
+    repo_base: Option<&Path>,
+) -> Option<Vec<String>> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    let canon_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let bases: Vec<PathBuf> = if canon_root == root {
+        vec![canon_root]
+    } else {
+        vec![canon_root, root.to_path_buf()]
+    };
+    let wt = std::fs::canonicalize(assigned_worktree)
+        .unwrap_or_else(|_| assigned_worktree.to_path_buf());
+    let mut args: Vec<String> = Vec::new();
+    // Base layer: host read-only.
+    args.extend([
+        "--ro-bind".into(),
+        "/".into(),
+        "/".into(),
+        "--dev".into(),
+        "/dev".into(),
+        "--proc".into(),
+        "/proc".into(),
+        "--tmpfs".into(),
+        "/tmp".into(),
+        "--share-net".into(),
+        "--die-with-parent".into(),
+        "--new-session".into(),
+    ]);
+    // Mask the benchmark answer-key dirs even though `/` was bound read-only above.
+    for base in &bases {
+        for sub in ["instances", "research"] {
+            let p = base.join(sub);
+            args.extend(["--tmpfs".into(), p.to_string_lossy().into_owned()]);
+        }
+    }
+    // Hide every monobench-work tree (cross-instance + cross-process protection), then
+    // re-expose ONLY our assigned worktree as writable.
+    for masked in ["/tmp/monobench-work", "/private/tmp/monobench-work"] {
+        args.extend(["--tmpfs".into(), masked.into()]);
+    }
+    args.extend([
+        "--bind".into(),
+        wt.to_string_lossy().into_owned(),
+        wt.to_string_lossy().into_owned(),
+    ]);
+    // Anti-cheat: mask .git in the worktree (worktree's .git is a file marker; tmpfs replaces
+    // it with an empty directory which is indistinguishable from "no git repo" to git itself).
+    args.extend([
+        "--tmpfs".into(),
+        wt.join(".git").to_string_lossy().into_owned(),
+    ]);
+    if let Some(rb) = repo_base {
+        let rb_canon = std::fs::canonicalize(rb).unwrap_or_else(|_| rb.to_path_buf());
+        args.extend([
+            "--ro-bind".into(),
+            rb_canon.to_string_lossy().into_owned(),
+            rb_canon.to_string_lossy().into_owned(),
+        ]);
+        args.extend([
+            "--tmpfs".into(),
+            rb_canon.join(".git").to_string_lossy().into_owned(),
+        ]);
+    }
+    Some(args)
+}
+
+/// Cross-platform dispatcher: returns a `Command` that runs `inner` (a solver binary like
+/// "claude" / "codex" / "agy" / "grok" / "opencode") wrapped in the OS-appropriate sandbox.
+/// On macOS, wraps with `sandbox-exec -f <SBPL profile>`. On Linux, wraps with `bwrap <args> --`.
+/// On other OSes or if sandbox generation fails, returns `Command::new(inner)` unwrapped —
+/// the integrity scanner is the second line of defense in that case.
+pub(crate) fn jailed_solver_command(
+    inner: &str,
+    root: &Path,
+    tag: &str,
+    assigned_worktree: &Path,
+    repo_base: Option<&Path>,
+) -> Command {
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(p) = agy_read_jail_profile(root, tag, assigned_worktree, repo_base) {
+            let mut c = Command::new("sandbox-exec");
+            c.arg("-f").arg(p).arg(inner);
+            return c;
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(args) = agy_read_jail_bwrap_args(root, assigned_worktree, repo_base) {
+            let mut c = Command::new("bwrap");
+            c.args(&args);
+            c.arg("--");
+            c.arg(inner);
+            return c;
+        }
+    }
+    // Silences unused-param warnings on non-macOS/non-Linux targets where neither branch fires.
+    let _ = (root, tag);
+    Command::new(inner)
+}
+
+/// Shell-string variant of [`jailed_solver_command`] for callers that build a shell command
+/// rather than spawn a `Command` directly (niia_runner). Returns an empty string if no
+/// sandbox is available on this OS (caller runs the solver unwrapped). The returned prefix
+/// always ends with a trailing space so it can be string-concatenated with the rest of the
+/// command without extra padding logic.
+pub(crate) fn jailed_solver_shell_prefix(
+    root: &Path,
+    tag: &str,
+    assigned_worktree: &Path,
+    repo_base: Option<&Path>,
+) -> String {
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(p) = agy_read_jail_profile(root, tag, assigned_worktree, repo_base) {
+            return format!(
+                "sandbox-exec -f {} ",
+                crate::niia_runner::shell_quote(&p.to_string_lossy())
+            );
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(args) = agy_read_jail_bwrap_args(root, assigned_worktree, repo_base) {
+            let quoted: Vec<String> = args
+                .iter()
+                .map(|a| crate::niia_runner::shell_quote(a))
+                .collect();
+            return format!("bwrap {} -- ", quoted.join(" "));
+        }
+    }
+    let _ = (root, tag, assigned_worktree, repo_base);
+    String::new()
 }
 
 /// The model agy will actually use in `--print` mode. Print mode has NO `--model` flag (verified:
@@ -2903,5 +3031,84 @@ mod tests {
         assert!(body.contains("/instances"), "instances deny missing:\n{body}");
         assert!(body.contains("/research"), "research deny missing:\n{body}");
         let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn bwrap_args_linux_enforce_anti_cheat_and_sibling_isolation() {
+        // The bwrap path only fires on Linux (the function returns None elsewhere). On macOS
+        // we can still pin the *expected* arg shape so a future edit can't silently regress
+        // the Linux side — directly call the inner builder ignoring the cfg gate by working
+        // around it with a helper closure that mirrors the function body. Here we instead
+        // assert the cross-platform dispatcher returns the macOS form on macOS, and the
+        // standalone bwrap fn only returns Some on Linux.
+        if cfg!(target_os = "linux") {
+            let root = std::env::temp_dir().join(format!("mb-bwrap-test-{}", std::process::id()));
+            std::fs::create_dir_all(&root).ok();
+            let wt = std::env::temp_dir().join("monobench-work/wt/inst42/r-t1");
+            let base = std::env::temp_dir().join("monobench-work/inst42-base");
+            let args = super::agy_read_jail_bwrap_args(&root, &wt, Some(&base))
+                .expect("Linux must return Some");
+            let joined = args.join(" ");
+            // Network must stay open for LLM API calls.
+            assert!(joined.contains("--share-net"), "share-net missing: {joined}");
+            // Anti-cheat: .git inside the worktree masked with tmpfs.
+            let wt_git = wt.join(".git").to_string_lossy().into_owned();
+            assert!(
+                joined.contains(&format!("--tmpfs {wt_git}")),
+                ".git tmpfs mask missing: {joined}"
+            );
+            // Structural sibling isolation: monobench-work tree masked before our worktree
+            // bind. Both /tmp and /private/tmp variants present so macOS hosts that bind-mount
+            // the same path are also covered.
+            assert!(joined.contains("--tmpfs /tmp/monobench-work"), "{joined}");
+            // Answer-key dirs masked.
+            assert!(joined.contains("/instances"), "{joined}");
+            assert!(joined.contains("/research"), "{joined}");
+            // Worktree is re-bound writable AFTER the monobench-work tmpfs mask so our path
+            // wins. The dispatcher concatenates inner cmd after `--`.
+            assert!(
+                joined.contains(&format!(
+                    "--bind {} {}",
+                    wt.to_string_lossy(),
+                    wt.to_string_lossy()
+                )),
+                "worktree writable bind missing: {joined}"
+            );
+        } else {
+            // On non-Linux, the function must return None so dispatcher falls back gracefully.
+            let wt = std::env::temp_dir().join("monobench-work/wt/inst42/r-t1");
+            assert!(super::agy_read_jail_bwrap_args(&std::env::temp_dir(), &wt, None).is_none());
+        }
+    }
+
+    #[test]
+    fn jailed_solver_command_dispatches_per_os() {
+        let root = std::env::temp_dir();
+        let wt = std::env::temp_dir().join("monobench-work/wt/inst99/r-t1");
+        std::fs::create_dir_all(&wt).ok();
+        let cmd = super::jailed_solver_command("claude", &root, "test-dispatch", &wt, None);
+        let program = cmd.get_program().to_string_lossy().into_owned();
+        if cfg!(target_os = "macos") {
+            assert_eq!(program, "sandbox-exec", "macOS must wrap with sandbox-exec");
+            let args: Vec<String> = cmd
+                .get_args()
+                .map(|s| s.to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(args.first().map(String::as_str), Some("-f"));
+            assert_eq!(args.last().map(String::as_str), Some("claude"));
+        } else if cfg!(target_os = "linux") {
+            assert_eq!(program, "bwrap", "Linux must wrap with bwrap");
+            let args: Vec<String> = cmd
+                .get_args()
+                .map(|s| s.to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(args.last().map(String::as_str), Some("claude"));
+            // The bwrap arg list ends with `--` then the inner command.
+            assert!(args.contains(&"--".to_string()), "bwrap separator missing");
+        } else {
+            // Unsupported OS: dispatcher returns Command::new("claude") unwrapped.
+            assert_eq!(program, "claude");
+        }
+        let _ = std::fs::remove_dir_all(&wt);
     }
 }
