@@ -10,6 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 serde_json = "1"
+lib-niia-core = { path = "../../../tauri-apps/lib-niia-core" }
 
 [profile.release]
 opt-level = 2

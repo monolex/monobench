@@ -5,6 +5,7 @@ mod evidence;
 mod export;
 mod grade;
 mod integrity;
+mod maker_state_bridge;
 mod meter;
 mod monogram_audit;
 mod niia_runner;
@@ -2163,6 +2164,7 @@ fn main() {
                 );
             }
             monogram_audit::audit(id, &files, &stats);
+            maker_state_bridge::print_maker_state_report(&stats);
             println!("\n[NEXT]");
             println!(
                 "  monobench evidence {id} --pattern 'region_first_next|systems_lifecycle_next|ROOTCAUSE'  # verify maker recommendations"
