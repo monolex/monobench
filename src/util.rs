@@ -3,7 +3,7 @@ use serde_json::Value;
 use std::io::IsTerminal;
 
 pub const MODELS: [&str; 5] = ["opus", "sonnet", "haiku", "codex", "gemini"];
-pub const CLIS: [&str; 5] = ["claude", "codex", "agy", "gemini", "grok"];
+pub const CLIS: [&str; 6] = ["claude", "codex", "agy", "gemini", "grok", "opencode"];
 const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 
 // palette: yellow → orange → red ONLY (baseline=yellow stands apart from tool arms). Chrome stays in-palette.
@@ -247,7 +247,13 @@ pub fn full_arm_name(tool: &str, version: &str, cli: &str, model: &str, effort: 
     n.push('-');
     n.push_str(cli);
     n.push('-');
-    n.push_str(model);
+    // Filesystem-safe: opencode-style `provider/model` names (e.g. `openai/gpt-5.4-mini-fast`)
+    // would otherwise put `/` in the run-id → break .running marker creation, results dir
+    // walking, and label round-tripping. Replace `/` with `_`. Existing models don't use `_`,
+    // so the replacement is unambiguous for display/parse_arm purposes. The original model
+    // string is preserved separately in run_meta (meta.json `model` field), so downstream
+    // code that needs the raw provider/model can still get it.
+    n.push_str(&model.replace('/', "_"));
     if !effort.is_empty() {
         n.push('-');
         n.push_str(effort);

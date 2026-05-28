@@ -39,7 +39,7 @@ COMMANDS
       [--tools a,b]          Default: monogram. Use before `matrix --prepared`.
   matrix <id>                Run a tool × repeat grid for exactly ONE CLI+model command.
       [--tools a,b]          Tool arms to compare, e.g. baseline,monogram.
-      [--cli c]              CLI environment: claude | codex | agy | gemini | grok.
+      [--cli c]              CLI environment: claude | codex | agy | gemini | grok | opencode.
       [--model x]            Full model label for this command. Repeat the matrix command for the next model.
                              (agy: must match ~/.gemini/antigravity-cli/settings.json model, else refused.)
       [--via direct|niia]    direct by default; niia drives the CLI through the headless terminal.
@@ -92,8 +92,9 @@ COMMANDS
                              fails/mix) — for CLI and MCP delivery. "Did the agent actually use it?"
   monogram-audit <id>        Diagnose monogram command/result failure patterns in solver telemetry
       [--tag T] [--run RUN]  Optional filters for one experiment tag or one resolved run label.
-                             and print maker recommendations for general score/proof/budget/NEXT
-                             changes (not solver hints).
+      [--json]               Emit the same audit + maker-state bridge as structured JSON, including
+                             consciousness_query/query_key/query_basis provenance fields plus
+                             layer_specs and non-scoring diagnostic_pressures.
   meter <session.jsonl>      Summarize tokens/cache/cost for a raw model session JSONL.
   add <id>                   Scaffold a new instance from instances/_TEMPLATE/.
   version                    Print the monobench version.
@@ -129,6 +130,11 @@ CLI / MODEL AXES
                  tokens/cost_usd null, *_available false; meter carries honest session metrics from
                  ~/.grok/sessions/<cwd>/<sessionId>/signals.json (turns, tool_calls, context_tokens_used,
                  duration, ttft), found via the sessionId in grok's JSON envelope. effort is label-only.
+  --cli opencode direct `opencode run <prompt> <clone> -m <provider/model> --format json` (sst/opencode,
+                 model label uses provider/model format like `anthropic/claude-haiku-4-5`). NDJSON
+                 event stream → final agent text reassembled from `message.part.updated` events of
+                 type "text". No per-turn token split or cost in the stream → tokens/cost_usd null,
+                 *_available false; activity-only meter (duration, exit_status). effort is label-only.
   --via niia     drive the selected CLI through the niia headless terminal (write/wait-idle/get-answer);
                  picks a live ATTACHED session (detached zombies are skipped). For agy it runs
                  `agy --print` with --dangerously-skip-permissions + --add-dir + the sandbox-exec

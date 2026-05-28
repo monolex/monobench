@@ -1549,9 +1549,101 @@ pub fn run(
                 ));
             }
         }
+        ("direct", "opencode") => {
+            // opencode run <prompt> --format json → streams events to stdout, exits when the
+            // session goes idle. Model format is `provider/model` (e.g. `anthropic/claude-haiku-4-5`).
+            // Like grok, opencode is a subscription/API-key CLI without per-run cost in its
+            // stdout — we capture duration + activity, not billed tokens.
+            let prompt = format!("{sys}\n\n{q}\n");
+            let ans = out.join(format!("{runid}.answer.txt"));
+            let envelope = out.join(format!("{runid}.opencode.json"));
+            let err = out.join(format!("{runid}.err"));
+            let opencode_model = if model.is_empty() {
+                eprintln!(
+                    "opencode runner requires --model/MONOBENCH_MODEL in 'provider/model' format \
+                     (e.g. 'anthropic/claude-haiku-4-5')"
+                );
+                return 1;
+            } else {
+                model
+            };
+            let solver_deny = install_solver_deny_wrapper(&runid, prepared_monogram_guard);
+            // kernel-level git block (+ read-jail). opencode walks the filesystem to find project
+            // markers; sandbox-exec confines reads to the assigned worktree like the other CLIs.
+            let jail = agy_read_jail_profile(root, &runid, &clone, repo_base.as_deref());
+            let t0 = std::time::Instant::now();
+            let mut cmd = match &jail {
+                Some(p) => {
+                    let mut c = Command::new("sandbox-exec");
+                    c.arg("-f").arg(p).arg("opencode");
+                    c
+                }
+                None => Command::new("opencode"),
+            };
+            // opencode run <prompt> [project] -m provider/model --format json
+            //   --dangerously-skip-permissions: opencode otherwise auto-rejects every tool call
+            //     in non-interactive mode (read/edit/glob/grep/list/bash/external_directory all
+            //     prompt-gated). The KERNEL sandbox (sandbox-exec) is doing the actual confinement
+            //     — opencode's app-level prompt would just freeze the run since stdin is a pipe.
+            //     Same flag name and semantics as claude's `--dangerously-skip-permissions`.
+            // The positional `project` sets opencode's project root to our assigned worktree;
+            // current_dir matches it so libc cwd resolution lands inside the allowed subpath.
+            cmd.current_dir(&clone)
+                .arg("run")
+                .arg(&prompt)
+                .arg(&clone)
+                .arg("-m")
+                .arg(opencode_model)
+                .arg("--dangerously-skip-permissions")
+                .args(["--format", "json"]);
+            for e in STRIP_ENV {
+                cmd.env_remove(e);
+            }
+            if prepared_monogram_guard {
+                cmd.env("MONOGRAM_PREPARED_INDEX", "1");
+            }
+            if let Some(dir) = &solver_deny {
+                prepend_path(&mut cmd, dir);
+            }
+            cmd.stdout(File::create(&envelope).unwrap())
+                .stderr(File::create(&err).unwrap());
+            let status = cmd.status();
+            let dur = t0.elapsed().as_secs();
+            // Envelope is a stream of JSON events; extract the agent's final text for grading.
+            let answer = parse_opencode_envelope(&envelope);
+            std::fs::write(&ans, &answer).ok();
+            let (exit_status, exit_success, runner_error) = match status {
+                Ok(s) => (
+                    s.code(),
+                    s.success(),
+                    if s.success() {
+                        None
+                    } else {
+                        Some(format!("opencode exited with {s}"))
+                    },
+                ),
+                Err(e) => (None, false, Some(format!("failed to run opencode: {e}"))),
+            };
+            let meter = opencode_meter(
+                dur,
+                opencode_model,
+                &effort,
+                exit_status,
+                exit_success,
+                runner_error,
+            );
+            std::fs::write(out.join(format!("{runid}.meter.json")), meter).ok();
+            if !quiet {
+                print_grade(&grade_text_file(
+                    &inst,
+                    &ans.to_string_lossy(),
+                    &out.join(format!("{runid}.meter.json")).to_string_lossy(),
+                ));
+            }
+        }
         ("direct", other) => {
             eprintln!(
-                "unsupported direct cli '{other}' (supported: claude, codex, agy, grok; use --via niia for other CLIs)"
+                "unsupported direct cli '{other}' (supported: claude, codex, agy, grok, opencode; use --via niia for other CLIs)"
             );
             return 1;
         }
@@ -1897,11 +1989,17 @@ pub(crate) fn agy_read_jail_profile(
     };
     let mut profile = String::from(
         "(version 1)\n(allow default)\n\
-         ; anti-contamination: block git ITSELF at the kernel (process-exec), not just via PATH —\n\
-         ; the solver cannot read the fix from history however it invokes git (absolute path,\n\
-         ; login shell, env). Reading any .git data is denied too, as defense-in-depth.\n\
-         (deny process-exec* (regex #\"(^|/)git$\"))\n\
-         (deny process-exec* (regex #\"(^|/)git-\"))\n\
+         ; anti-contamination: block reading any .git data — this is the real anti-cheat. Even if\n\
+         ; a solver invokes git (absolute path, login shell, env), git itself can't read .git, so\n\
+         ; `git log` exits with \"not a git repository\" and the fix-in-history vector is closed.\n\
+         ;\n\
+         ; NB: we intentionally do NOT deny process-exec* on `git`. That used to be defense-in-depth\n\
+         ; but it breaks opencode, which spawns git at session-init for VCS detection — Bun's\n\
+         ; posix_spawn EPERM throws synchronously and crashes opencode before it can fall through\n\
+         ; to its \"not a git repo\" branch (Effect.catch in core/src/git.ts:run wraps proc.run\n\
+         ; failure → exitCode 1 → vcs undefined). With process-exec allowed and .git reads denied,\n\
+         ; opencode detects no-vcs gracefully (snapshot+vcs both skipped via `vcs !== \"git\"`\n\
+         ; guards in 15+ callsites), while every other solver still cannot read git history.\n\
          (deny file-read* (regex #\"(^|/)\\.git(/|$)\"))\n",
     );
     for base in &bases {
@@ -2185,6 +2283,84 @@ fn grok_meter(
         "tools_used": g("toolsUsed"),
         "session_duration_s": g("sessionDurationSeconds"),
         "avg_ttft_ms": g("avgTimeToFirstTokenMs"),
+        "duration_s": dur,
+        "exit_status": exit_status,
+        "exit_success": exit_success,
+        "runner_error": runner_error
+    })
+    .to_string()
+}
+
+/// Parse opencode's `--format json` stream-of-events envelope to extract the agent's final text.
+///
+/// opencode emits NDJSON events (`message.part.updated`, `session.idle`, `session.error`, …).
+/// Text the user sees comes from `message.part.updated` events whose `part.type == "text"`.
+/// We collect all assistant text parts in order and concatenate; if the envelope isn't NDJSON
+/// or has no recognizable text parts, return the raw envelope so grading still sees something.
+fn parse_opencode_envelope(path: &Path) -> String {
+    let raw = std::fs::read_to_string(path).unwrap_or_default();
+    let mut texts: Vec<String> = Vec::new();
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || !trimmed.starts_with('{') {
+            continue;
+        }
+        let Ok(ev) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+            continue;
+        };
+        // Two shapes to handle: outer SDK event `{type, properties: {part: {...}}}` or already-
+        // unwrapped `{type, part: {...}}`. Take the `part` from either.
+        let part = ev
+            .pointer("/properties/part")
+            .or_else(|| ev.pointer("/part"))
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        if part.get("type").and_then(|x| x.as_str()) == Some("text") {
+            if let Some(t) = part.get("text").and_then(|x| x.as_str()) {
+                if !t.is_empty() {
+                    texts.push(t.to_string());
+                }
+            }
+        }
+    }
+    if texts.is_empty() {
+        raw
+    } else {
+        // De-dup consecutive identical entries (incremental updates may repeat the running text).
+        let mut out = String::new();
+        for t in &texts {
+            if !out.ends_with(t.as_str()) {
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                out.push_str(t);
+            }
+        }
+        out
+    }
+}
+
+/// Build an opencode meter. Like grok, opencode uses a subscription/API key and doesn't emit
+/// reliable per-turn token/cost in its `--format json` stream — we record activity + duration,
+/// never fake tokens or cost. (Per-session usage is available via `opencode stats` separately.)
+fn opencode_meter(
+    dur: u64,
+    model_hint: &str,
+    effort: &str,
+    exit_status: Option<i32>,
+    exit_success: bool,
+    runner_error: Option<String>,
+) -> String {
+    serde_json::json!({
+        "runner": "opencode",
+        "model": model_hint,
+        "requested_model": model_hint,
+        "requested_effort": effort,
+        "tokens": null,
+        "cost_usd": null,
+        "tokens_available": false,
+        "cost_available": false,
+        "meter_error": "opencode --format json doesn't expose per-turn token split or cost; use `opencode stats` for session totals",
         "duration_s": dur,
         "exit_status": exit_status,
         "exit_success": exit_success,
@@ -2711,14 +2887,18 @@ mod tests {
         let p = super::agy_read_jail_profile(&root, "test-existing-denies", &wt, None)
             .expect("profile should be created");
         let body = std::fs::read_to_string(&p).expect("profile readable");
-        // Pre-existing protections must still be present.
-        assert!(
-            body.contains("(deny process-exec* (regex #\"(^|/)git$\"))"),
-            "git deny missing:\n{body}"
-        );
+        // file-read deny on .git is THE anti-cheat — must remain.
         assert!(
             body.contains("(deny file-read* (regex #\"(^|/)\\.git(/|$)\"))"),
             ".git deny missing:\n{body}"
+        );
+        // process-exec deny on git was removed for opencode compatibility (Bun's posix_spawn
+        // EPERM crashes opencode synchronously before Effect.catch can degrade vcs to undefined).
+        // Anti-cheat is preserved by the file-read .git deny above — git can spawn but cannot
+        // read .git, so `git log` exits with "not a git repository".
+        assert!(
+            !body.contains("(deny process-exec* (regex #\"(^|/)git$\"))"),
+            "process-exec git deny must NOT be present (breaks opencode):\n{body}"
         );
         assert!(body.contains("/instances"), "instances deny missing:\n{body}");
         assert!(body.contains("/research"), "research deny missing:\n{body}");
