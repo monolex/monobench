@@ -19,6 +19,8 @@ fn denied_text(t: &str) -> bool {
         || lc.contains("disallow")
         || lc.contains("denied")
         || lc.contains("git is disabled during solver runs")
+        || lc.contains("prepared monogram index is already installed")
+        || lc.contains("monogram prepared index guard")
         || lc.contains("operation not permitted") // Seatbelt sandbox-exec deny (git/.git/answer-key)
 }
 
@@ -367,6 +369,14 @@ mod tests {
         assert!(evs[0].denied);
         assert!(evs[0].result.contains("exited 126"));
         let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn prepared_monogram_guard_text_marks_denied() {
+        assert!(denied_text(
+            "monobench: prepared monogram index is already installed; solver-side -r/--reindex is disabled."
+        ));
+        assert!(denied_text("MONOGRAM PREPARED INDEX GUARD"));
     }
 
     #[test]

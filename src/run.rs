@@ -1169,6 +1169,7 @@ pub fn run(
     }
 
     running_guard.set("solver", &format!("cli={cli} via={via} model={model}"));
+    let prepared_monogram_guard = prepared && tool_uses_monogram_index(&tj);
     match (via.as_str(), cli.as_str()) {
         ("niia", _) => {
             if let Err(e) = crate::niia_runner::run(
@@ -1180,6 +1181,7 @@ pub fn run(
                 &effort,
                 &cli,
                 model,
+                prepared_monogram_guard,
             ) {
                 eprintln!("niia runner failed: {e}");
                 return 1;
@@ -1197,7 +1199,7 @@ pub fn run(
             std::fs::write(&pf, format!("{sys}\n\n{q}\n")).ok();
             let ans = out.join(format!("{runid}.answer.txt"));
             let err = out.join(format!("{runid}.err"));
-            let git_deny = install_git_deny_wrapper(&runid);
+            let solver_deny = install_solver_deny_wrapper(&runid, prepared_monogram_guard);
             // kernel-level git block (+ answer-key/.git read-jail) — codex has no usable native
             // command-deny and runs with --dangerously-bypass-…-sandbox, so the PATH shim alone
             // is bypassable. Wrap in sandbox-exec like agy.
@@ -1249,7 +1251,10 @@ pub fn run(
             for e in STRIP_ENV {
                 cmd.env_remove(e);
             }
-            if let Some(dir) = &git_deny {
+            if prepared_monogram_guard {
+                cmd.env("MONOGRAM_PREPARED_INDEX", "1");
+            }
+            if let Some(dir) = &solver_deny {
                 prepend_path(&mut cmd, dir);
             }
             cmd.stdin(File::open(&pf).unwrap())
@@ -1277,7 +1282,7 @@ pub fn run(
             let ans = out.join(format!("{runid}.answer.txt"));
             let err = out.join(format!("{runid}.err"));
             let log = out.join(format!("{runid}.agy.log"));
-            let git_deny = install_git_deny_wrapper(&runid);
+            let solver_deny = install_solver_deny_wrapper(&runid, prepared_monogram_guard);
             let t0 = std::time::Instant::now();
             // agy ignores the process cwd (it runs in ~/.gemini/antigravity-cli/scratch), so the
             // repo under test must be passed as a workspace dir (--add-dir) or agy indexes 0 files
@@ -1305,7 +1310,10 @@ pub fn run(
             for e in STRIP_ENV {
                 cmd.env_remove(e);
             }
-            if let Some(dir) = &git_deny {
+            if prepared_monogram_guard {
+                cmd.env("MONOGRAM_PREPARED_INDEX", "1");
+            }
+            if let Some(dir) = &solver_deny {
                 prepend_path(&mut cmd, dir);
             }
             cmd.stdout(File::create(&ans).unwrap())
@@ -1393,7 +1401,7 @@ pub fn run(
                 }
             };
             let prompt = format!("{sys}\n\n{}\n# YOUR TASK\n{q}", "═".repeat(80));
-            let git_deny = install_git_deny_wrapper(&runid);
+            let solver_deny = install_solver_deny_wrapper(&runid, prepared_monogram_guard);
             // kernel-level git block (+ read-jail) in addition to --disallowedTools "Bash(git:*)":
             // the matcher misses compound/absolute git (`cd x && /usr/bin/git log`); sandbox-exec
             // closes that hole for every invocation.
@@ -1432,9 +1440,12 @@ pub fn run(
             for e in STRIP_ENV {
                 cmd.env_remove(e);
             }
+            if prepared_monogram_guard {
+                cmd.env("MONOGRAM_PREPARED_INDEX", "1");
+            }
             // anti-contamination: PATH-shadow `git` (exit 126) so bare-git invocations the claude
             // --disallowedTools "Bash(git:*)" matcher misses (e.g. `cd x && git log`) also fail.
-            if let Some(dir) = &git_deny {
+            if let Some(dir) = &solver_deny {
                 prepend_path(&mut cmd, dir);
             }
             cmd.stdout(jsonl_file)
@@ -1457,7 +1468,7 @@ pub fn run(
             } else {
                 model
             };
-            let git_deny = install_git_deny_wrapper(&runid);
+            let solver_deny = install_solver_deny_wrapper(&runid, prepared_monogram_guard);
             // kernel-level git block (+ read-jail); grok runs --always-approve so the PATH shim
             // alone is bypassable. Wrap in sandbox-exec like agy.
             let jail = agy_read_jail_profile(root, &runid);
@@ -1489,7 +1500,10 @@ pub fn run(
             for e in STRIP_ENV {
                 cmd.env_remove(e);
             }
-            if let Some(dir) = &git_deny {
+            if prepared_monogram_guard {
+                cmd.env("MONOGRAM_PREPARED_INDEX", "1");
+            }
+            if let Some(dir) = &solver_deny {
                 prepend_path(&mut cmd, dir);
             }
             cmd.stdout(File::create(&envelope).unwrap())
@@ -1736,18 +1750,96 @@ fn run_index(
     }
 }
 
-fn install_git_deny_wrapper(runid: &str) -> Option<PathBuf> {
-    let dir = std::env::temp_dir().join(format!("monobench-no-git-{runid}-{}", std::process::id()));
+pub(crate) fn install_solver_deny_wrapper(
+    runid: &str,
+    block_monogram_reindex: bool,
+) -> Option<PathBuf> {
+    let dir = std::env::temp_dir().join(format!(
+        "monobench-solver-deny-{runid}-{}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(&dir).ok()?;
     let git = dir.join("git");
     std::fs::write(&git, "#!/bin/sh\necho 'monobench: git is disabled during solver runs (anti-contamination)' >&2\nexit 126\n").ok()?;
+    if block_monogram_reindex {
+        let monogram = dir.join("monogram");
+        let real = resolve_executable("monogram").unwrap_or_else(|| PathBuf::from("monogram"));
+        std::fs::write(&monogram, monogram_prepared_guard_script(&real)).ok()?;
+    }
     #[cfg(unix)]
     {
-        let mut perm = std::fs::metadata(&git).ok()?.permissions();
-        perm.set_mode(0o755);
-        std::fs::set_permissions(&git, perm).ok()?;
+        for exe in ["git", "monogram"] {
+            let path = dir.join(exe);
+            if !path.exists() {
+                continue;
+            }
+            let mut perm = std::fs::metadata(&path).ok()?.permissions();
+            perm.set_mode(0o755);
+            std::fs::set_permissions(&path, perm).ok()?;
+        }
     }
     Some(dir)
+}
+
+fn resolve_executable(name: &str) -> Option<PathBuf> {
+    if name.contains(std::path::MAIN_SEPARATOR) {
+        let path = PathBuf::from(name);
+        return path.is_file().then_some(path);
+    }
+    let path = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path) {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+fn monogram_prepared_guard_script(real_monogram: &Path) -> String {
+    format!(
+        r#"#!/bin/sh
+case "${{1:-}}" in
+  index|i|reindex|prune)
+    echo 'monobench: prepared monogram index is already installed; solver-side monogram index mutation is disabled.' >&2
+    echo '[NEXT]' >&2
+    echo '  monogram stats' >&2
+    echo '  monogram search "<symptom words>" -n 8' >&2
+    echo '  monogram region "<implementation intent>" -n 5 --score-debug' >&2
+    exit 126
+    ;;
+esac
+case "${{1:-}} ${{2:-}}" in
+  "boot init"|"b init")
+    echo 'monobench: prepared monogram index is already installed; solver-side boot init is disabled.' >&2
+    echo '[NEXT]' >&2
+    echo '  monogram stats' >&2
+    echo '  monogram search "<symptom words>" -n 8' >&2
+    echo '  monogram region "<implementation intent>" -n 5 --score-debug' >&2
+    exit 126
+    ;;
+esac
+for arg in "$@"; do
+  case "$arg" in
+    -r|--reindex)
+      echo 'monobench: prepared monogram index is already installed; solver-side -r/--reindex is disabled.' >&2
+      echo '[NEXT]' >&2
+      echo '  monogram stats' >&2
+      echo '  monogram search "<symptom words>" -n 8' >&2
+      echo '  monogram region "<implementation intent>" -n 5 --score-debug' >&2
+      exit 126
+      ;;
+  esac
+done
+export MONOGRAM_PREPARED_INDEX=1
+exec {} "$@"
+"#,
+        sh_quote(&real_monogram.to_string_lossy())
+    )
 }
 
 fn prepend_path(cmd: &mut Command, dir: &Path) {
@@ -2159,6 +2251,35 @@ mod tests {
         .unwrap_err();
         assert!(err.contains("index_steps"));
         let _ = std::fs::remove_file(log);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn solver_wrapper_blocks_prepared_monogram_reindex() {
+        let dir = install_solver_deny_wrapper("prepared-guard-test", true).unwrap();
+        let out = Command::new(dir.join("monogram"))
+            .args(["index", ".", "-r"])
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(126));
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains("prepared monogram index is already installed"));
+        assert!(stderr.contains("[NEXT]"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn solver_wrapper_blocks_prepared_monogram_mutation_commands() {
+        let dir = install_solver_deny_wrapper("prepared-mutation-guard-test", true).unwrap();
+        for args in [["prune", "--force"], ["boot", "init"]] {
+            let out = Command::new(dir.join("monogram")).args(args).output().unwrap();
+            assert_eq!(out.status.code(), Some(126));
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            assert!(stderr.contains("prepared monogram index is already installed"));
+            assert!(stderr.contains("[NEXT]"));
+        }
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

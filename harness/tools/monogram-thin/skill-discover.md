@@ -3,6 +3,11 @@
 monogram has already indexed this repository. It is your primary investigation tool here — reach
 for it before grep, find, or reading files by hand.
 
+Prepared-index rule: never run `monogram index`, `monogram i`, `monogram reindex`,
+`monogram prune`, `monogram boot init`, or `-r` / `--reindex` in this benchmark run. The prepared DB
+is installed before you start. If stats looks wrong, report `HARNESS_DB_MISMATCH`; do not mutate the
+index.
+
 This note deliberately does NOT list monogram's commands. Bring up monogram's own skill instead:
 
     monogram

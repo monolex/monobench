@@ -57,6 +57,8 @@ full model name rather than an alias. Result labels are `<tool>-<cli>-<model>-<e
 `rN` is an automatic repeat index, not the experiment's memory. Store human intent in
 `<run>.meta.json` with `--tag`, `--note`, or `monobench note`; metadata must not alter artifact
 identity or backward-compatible label parsing.
+Analysis commands may use that metadata as a read-only filter; for example, `monogram-audit --tag`
+isolates one repeated experiment batch without changing the underlying artifact identity.
 Run one CLI+model per `monobench matrix` command, then repeat the command for the next model. Run
 **n ≥ 3** per arm for a median (these bugs have high variance).
 
@@ -124,3 +126,7 @@ The final review is stored as `results/<id>/<run>.review.json`.
 - **Equal effort across arms.** If only the tool arm is told to "dig deep," you measure the prompt,
   not the tool. `prompts/depth.md` is shared.
 - **Index freshness.** Pre-index in the adapter so the agent doesn't burn a turn reindexing.
+  In prepared monogram runs this is a hard runtime contract: the solver gets a PATH wrapper plus
+  `MONOGRAM_PREPARED_INDEX=1`, and `monogram index`, `monogram reindex`, or `-r` / `--reindex`
+  must return a compact guard + `[NEXT]` instead of mutating the prepared DB. A tiny/wrong DB is
+  `HARNESS_DB_MISMATCH`, not permission to reindex inside the solver.

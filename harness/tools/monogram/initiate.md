@@ -27,6 +27,14 @@ FLOW  every command ends in a [NEXT] hint — follow it and the trail walks the 
             metrics → context·chain    uncalled → chain    important → chain (+ migrate)
   TERMINAL  serve/mcp (MCP server)     help
 
+MONOBENCH PREPARED MODE
+  If this reference is injected by monobench, the benchmark may already have installed a prepared
+  monogram DB before the solver starts. In that prepared run, do not run `index`, `i`, `reindex`,
+  `prune`, `boot init`, or any command with `-r` / `--reindex`; use `stats`, `search`, `region`,
+  `context`, and `chain`.
+  If the DB is missing, tiny, or points at the wrong repo, report `HARNESS_DB_MISMATCH` instead of
+  repairing it by reindexing from inside the solver.
+
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │  COMMANDS                                                                    │
 ├──────────────────────────────────────────────────────────────────────────────┤

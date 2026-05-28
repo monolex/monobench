@@ -104,7 +104,7 @@ tools ──→ run / matrix
 |------|------|
 | compare a tool vs baseline | `run <id> baseline` → `run <id> monogram` → `report <id>` |
 | investigate a MISS | `report <id>` → `evidence <id> <run> --pattern ROOTCAUSE` → `trace <id> <run>` → `export <id> <run>` |
-| diagnose a monogram loop failure | `monogram-audit <id>` → read `MAKER RECOMMENDATIONS` → `evidence <id> --pattern 'region_first_next|score-debug|ROOTCAUSE'` → classify path-not-closed vs closed-but-uncalibrated |
+| diagnose a monogram loop failure | `monogram-audit <id> --tag <batch>` or `--run <run>` → read `MAKER RECOMMENDATIONS` → `evidence <id> --pattern 'region_first_next|score-debug|ROOTCAUSE'` → classify path-not-closed vs closed-but-uncalibrated |
 | validate before counting a run | `integrity <id>` → `inspect <id> <run>` → rerun if contaminated |
 | scan conclusions across runs | `evidence <id> --pattern ROOTCAUSE` (index) → `evidence <id> <run>` (drill in) |
 | watch live runs | `matrix <id> …` → `watch --live` / `status <id> --live` |
@@ -148,8 +148,11 @@ has `supports_reasoning_effort:false`).
 then snapshots the resulting monogram SQLite DB under `results/<id>/_prepared/<tool>/`. With the
 default worktree isolation, `matrix --prepared` copies that snapshot into each run's expected
 per-worktree monogram DB path, rewrites stored absolute path prefixes to the run worktree, and skips
-per-run indexing. `--isolate shared` still works, but is single-lane and reuses the stable clone DB
-directly.
+per-run indexing. During prepared monogram solver runs, monobench also installs a small PATH wrapper
+and `MONOGRAM_PREPARED_INDEX=1`; `monogram index`, `monogram reindex`, and `-r` / `--reindex` return
+a compact guard + `[NEXT]` instead of mutating the prepared DB. If a solver sees a tiny or wrong DB,
+that is `HARNESS_DB_MISMATCH`, not permission to reindex. `--isolate shared` still works, but is
+single-lane and reuses the stable clone DB directly.
 
 Model selection is intentionally **one CLI+model per `matrix` command**. Use `--cli <name>
 --model <full-name>` and repeat the same matrix command for the next model. Result labels are
@@ -173,6 +176,13 @@ contamination score from observable signals: git history access, solver-side sql
 or index mutation, tool process kills, monogram re-indexing, stale prepared DB path/mtime anomalies,
 and missing telemetry. A high score means "keep for failure analysis and rerun," not an automatic
 final verdict.
+
+Use `monobench monogram-audit <id> --tag <batch>` or `--run <run>` when tuning the recursive monogram
+loop. The filter keeps fresh Haiku batches separate from older accumulated telemetry, so maker
+recommendations reflect the current experiment rather than all historical runs.
+For lifecycle/root-cause tuning, inspect proof-marker patterns such as `systems_lifecycle_next`,
+`lifecycle_file_probe`, `region_contrast_lock`, and `rootcause_label_guard` before deciding whether
+a failure is path-not-closed or closed-but-uncalibrated.
 
 Use `monobench evidence <id> <run> --pattern 'A|B|^/bin/zsh -lc'` when you would otherwise run
 `rg -n` against `results/<id>/<run>.err` or pipe `monogram-audit` into `tail`. It resolves the run

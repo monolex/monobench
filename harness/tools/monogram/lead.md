@@ -8,6 +8,14 @@ investigate this bug: it traces the call graph, cross-language bindings, ownersh
 dead/orphan contracts that link the symptom to its true cause. On EVERY step after that, reach for
 monogram.
 
+Prepared-index rule: this benchmark run already installed the monogram DB before the solver started.
+Do NOT run `monogram index`, `monogram i`, `monogram reindex`, `monogram prune`, `monogram boot init`,
+or any command with `-r`/`--reindex`. Those commands are disabled during prepared solver runs. If
+`monogram stats` shows 0 files, a tiny DB, an unrelated DB path, or the wrong repo, do not repair it
+by mutating the index; report
+`HARNESS_DB_MISMATCH` and continue only with non-mutating commands (`stats`, `list`, `search`,
+`region`, `context`, `chain`, `grep`).
+
 Do not stop at `search`. `search` ranks files; it is only the doorway. Prefer the staged
 region-first flow before deep chains:
 
@@ -24,7 +32,19 @@ Use `chain --depth 3+` only after a concrete symbol is proven and monogram's fan
 is safe. If monogram prints a budget/cap/fanout warning, follow the staged NEXT rather than adding
 `-r`, higher `-n`, or a deeper chain.
 
-For memory, ownership, refcount, UAF, cross-thread, or FFI bugs, use the ownership recipe immediately:
+For memory, ownership, refcount, UAF, cross-thread, or FFI bugs, do not force one ownership dialect
+onto every repo. Start with the symptom terms, then choose the recipe that matches the code you see.
+If `monogram stats` shows C/C++/Rust/PHP/Ruby/Kotlin/Java/Swift/Go, or the symptom/tool output says
+cleanup, reset, clear, free, destroy, close, finalize, parse, pool, arena, request, coroutine, GC,
+or lifecycle, use the systems lifecycle recipe first:
+
+    monogram region "<symptom terms> lifecycle owner boundary" -n 5 --score-debug
+    monogram grep "free\|put\|release\|unref\|deref\|clean\|cleanup\|reset\|clear\|destroy\|close\|finalize" -n 40
+    monogram context <containing-function-from-grep> --code 80
+    monogram chain <candidate-symbol> --callers --depth 1
+
+Use the JS/WebKit-style ownership recipe only when the repo or monogram output actually contains
+those symbols (`leakRef`, `isolatedCopy`, `ref`, `deref`) or the symptom is a JS wrapper/refcount bug:
 
     monogram region "ownership boundary ref deref leakRef isolatedCopy" -n 5 --score-debug
     monogram refgrep "isolatedCopy" --chain --depth 2
@@ -34,10 +54,11 @@ For memory, ownership, refcount, UAF, cross-thread, or FFI bugs, use the ownersh
     monogram coupling --domain ffi --pattern "<candidate symbol>" --all
 
 Symptom file is not root-cause proof. If the crash is in one language but ownership crosses into
-another, pivot by verbs (`ref`, `deref`, `leakRef`, `isolatedCopy`, `retain`, `release`, `free`) and
-then compare adjacent helpers. A sibling helper with similar words is a decoy until you prove the
-ownership balance. Broad words like `String`, `toSlice`, `fromJS`, `ref`, or `deref` are ecosystem
-symbols: use region and bounded context before expanding callers.
+another, pivot by the repo's actual verbs (`ref`, `deref`, `retain`, `release`, `free`, `cleanup`,
+`reset`, `destroy`, `close`, `finalize`, or JS-specific `leakRef`/`isolatedCopy`) and then compare
+adjacent helpers. A sibling helper with similar words is a decoy until you prove the ownership
+balance. Broad words like `String`, `toSlice`, `fromJS`, `ref`, or `deref` are ecosystem symbols:
+use region and bounded context before expanding callers.
 
 Run `monogram` now. Then use it to solve the task. The full reference and your task follow below.
 

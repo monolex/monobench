@@ -255,14 +255,14 @@ pub fn full_arm_name(tool: &str, version: &str, cli: &str, model: &str, effort: 
     n
 }
 
-/// Resolve a tool binary on PATH, follow symlinks, and read its OpenCLIs-install semver from the
-/// canonical path `…/versions/<name>/<semver>/<ts>/…`. Returns "" when the binary is missing or is
-/// not OpenCLIs-installed (e.g. a `target/debug` or worktree build) — it NEVER fabricates a version.
-/// This is the monogram on PATH at run start, the same one a CLI-delivered solver invokes.
+/// Resolve a tool binary on PATH, follow symlinks, and capture the version that the solver will run.
+/// Prefer the OpenCLIs install path because it is side-effect free; fall back to parsing the tool's
+/// own `--version` output so non-OpenCLIs/dev builds can still form distinct benchmark arms.
 pub fn capture_semver(bin: &str) -> String {
     resolve_on_path(bin)
         .as_deref()
         .and_then(semver_from_install_path)
+        .or_else(|| semver_from_tool_output(bin))
         .unwrap_or_default()
 }
 
@@ -287,6 +287,46 @@ fn semver_from_install_path(p: &std::path::Path) -> Option<String> {
     let i = comps.iter().position(|&c| c == "versions")?;
     let ver = comps.get(i + 2)?; // versions/<name>/<semver>/…
     is_version_token(ver).then(|| (*ver).to_string())
+}
+
+fn semver_from_tool_output(bin: &str) -> Option<String> {
+    let out = std::process::Command::new(bin)
+        .arg("--version")
+        .output()
+        .ok()?;
+    let mut text = String::new();
+    text.push_str(&String::from_utf8_lossy(&out.stdout));
+    text.push_str(&String::from_utf8_lossy(&out.stderr));
+    parse_semver_from_tool_text(bin, &text)
+}
+
+fn parse_semver_from_tool_text(bin: &str, text: &str) -> Option<String> {
+    let name = std::path::Path::new(bin)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(bin);
+    for line in text.lines() {
+        let mut parts = line.split_whitespace();
+        let Some(first) = parts.next() else {
+            continue;
+        };
+        let first_name = std::path::Path::new(first)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(first);
+        if first_name != name {
+            continue;
+        }
+        for part in parts {
+            let token = part.trim_matches(|c: char| {
+                !(c.is_ascii_alphanumeric() || c == '.' || c == '+' || c == '-')
+            });
+            if is_version_token(token) {
+                return Some(token.to_string());
+            }
+        }
+    }
+    None
 }
 
 pub fn env_name(cli: &str, model: &str, effort: &str) -> String {
@@ -508,10 +548,28 @@ mod tests {
             )),
             Some("0.52.1".to_string())
         );
-        // a non-OpenCLIs build (target/debug, worktree) has no version to read → None, never faked.
+        // a non-OpenCLIs build (target/debug, worktree) has no path-derived version.
         assert_eq!(
             super::semver_from_install_path(Path::new("/repo/target/debug/monogram")),
             None
+        );
+    }
+
+    #[test]
+    fn parses_semver_from_tool_output() {
+        assert_eq!(
+            super::parse_semver_from_tool_text(
+                "monogram",
+                "[WARN] stale index\nmonogram 0.61.0\nUSAGE: monogram <COMMAND>"
+            ),
+            Some("0.61.0".to_string())
+        );
+        assert_eq!(
+            super::parse_semver_from_tool_text(
+                "/repo/target/debug/monogram",
+                "target/debug/monogram 0.62.1\n"
+            ),
+            Some("0.62.1".to_string())
         );
     }
 

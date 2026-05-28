@@ -1,7 +1,6 @@
 use crate::meter;
 use serde_json::Value;
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread;
@@ -287,23 +286,6 @@ fn slug(out_prefix: &Path) -> String {
         .replace(|c: char| !c.is_ascii_alphanumeric(), "_")
 }
 
-fn install_git_deny_wrapper(tag: &str) -> Option<PathBuf> {
-    let dir = std::env::temp_dir().join(format!(
-        "monobench-niia-no-git-{tag}-{}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).ok()?;
-    let git = dir.join("git");
-    std::fs::write(&git, "#!/bin/sh\necho 'monobench: git is disabled during solver runs (anti-contamination)' >&2\nexit 126\n").ok()?;
-    #[cfg(unix)]
-    {
-        let mut perm = std::fs::metadata(&git).ok()?.permissions();
-        perm.set_mode(0o755);
-        std::fs::set_permissions(&git, perm).ok()?;
-    }
-    Some(dir)
-}
-
 fn flatten_prompt(prompt: &str) -> String {
     prompt.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -486,6 +468,7 @@ pub fn run(
     effort: &str,
     cli: &str,
     model: &str,
+    prepared_monogram_guard: bool,
 ) -> Result<(), String> {
     let session = live_session()?;
     let run_slug = slug(out_prefix);
@@ -527,19 +510,27 @@ pub fn run(
     )?;
     wait_idle(&session)?;
     let since = SystemTime::now();
-    let git_deny = install_git_deny_wrapper(
+    let solver_deny = crate::run::install_solver_deny_wrapper(
         out_prefix
             .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or("run"),
+        prepared_monogram_guard,
     );
-    if let Some(dir) = &git_deny {
+    if let Some(dir) = &solver_deny {
         write(
             &session,
             &format!(
                 "__MONOBENCH_OLD_PATH=\"$PATH\"; export PATH={}:\"$PATH\"\r",
                 shell_quote(&dir.to_string_lossy())
             ),
+        )?;
+        wait_idle(&session)?;
+    }
+    if prepared_monogram_guard {
+        write(
+            &session,
+            "export MONOGRAM_PREPARED_INDEX=1\r",
         )?;
         wait_idle(&session)?;
     }
@@ -660,7 +651,7 @@ pub fn run(
     write(&session, "\x03").ok();
     thread::sleep(Duration::from_secs(1));
     write(&session, "\x03").ok();
-    write(&session, "if [ -n \"$__MONOBENCH_OLD_PATH\" ]; then export PATH=\"$__MONOBENCH_OLD_PATH\"; unset __MONOBENCH_OLD_PATH; fi\r").ok();
+    write(&session, "if [ -n \"$__MONOBENCH_OLD_PATH\" ]; then export PATH=\"$__MONOBENCH_OLD_PATH\"; unset __MONOBENCH_OLD_PATH; fi; unset MONOGRAM_PREPARED_INDEX\r").ok();
     if let Some(path) = agy_prompt {
         std::fs::remove_file(path).ok();
     }
@@ -671,6 +662,12 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn parses_all_session_candidates() {
@@ -691,6 +688,7 @@ mod tests {
 
     #[test]
     fn builds_spawn_command() {
+        let _guard = env_lock().lock().unwrap();
         std::env::set_var("MONOBENCH_CLI", "codex");
         assert_eq!(
             spawn_command("codex", "gpt-5.4-mini", "low"),
@@ -701,6 +699,7 @@ mod tests {
 
     #[test]
     fn agy_spawn_skips_permission_prompts() {
+        let _guard = env_lock().lock().unwrap();
         std::env::remove_var("MONOBENCH_CLI");
         assert_eq!(
             spawn_command("agy", "gemini-3.5-flash-medium", "medium"),
@@ -726,6 +725,7 @@ mod tests {
 
     #[test]
     fn agy_print_command_preserves_prompt_and_artifacts() {
+        let _guard = env_lock().lock().unwrap();
         std::env::remove_var("MONOBENCH_CLI");
         std::env::remove_var("MONOBENCH_AGY_TIMEOUT");
         let p = Path::new("/tmp/monogram-agy-gemini-3.5-r1-t123");
@@ -749,6 +749,7 @@ mod tests {
 
     #[test]
     fn agy_print_command_jails_reads_when_profile_present() {
+        let _guard = env_lock().lock().unwrap();
         std::env::remove_var("MONOBENCH_CLI");
         let p = Path::new("/tmp/monogram-agy-x-r1-t1");
         let prompt_file = Path::new("/tmp/pf.txt");

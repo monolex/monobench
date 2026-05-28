@@ -368,6 +368,33 @@ fn classify_patterns(sub: &str, cmd: &str, result: &str, has_json_next: bool) ->
     if result.contains("free_site_triage") {
         out.push("free_site_triage");
     }
+    if result.contains("systems_lifecycle_next") {
+        out.push("systems_lifecycle_next");
+    }
+    if result.contains("lifecycle_owner_contrast") {
+        out.push("lifecycle_owner_contrast");
+    }
+    if result.contains("lifecycle_owner_helper_contrast") {
+        out.push("lifecycle_owner_helper_contrast");
+    }
+    if result.contains("broad_lifecycle_or_redirect") {
+        out.push("broad_lifecycle_or_redirect");
+    }
+    if result.contains("answer_not_ready") {
+        out.push("answer_not_ready");
+    }
+    if result.contains("lifecycle_file_probe") {
+        out.push("lifecycle_file_probe");
+    }
+    if result.contains("region_contrast_lock") {
+        out.push("region_contrast_lock");
+    }
+    if result.contains("guarded_anchor_preserve") {
+        out.push("guarded_anchor_preserve");
+    }
+    if result.contains("bounded_contrast_only") {
+        out.push("bounded_contrast_only");
+    }
     if result.contains("ui_render_timing_next") {
         out.push("ui_render_timing_next");
     }
@@ -410,6 +437,9 @@ fn classify_patterns(sub: &str, cmd: &str, result: &str, has_json_next: bool) ->
     if result.contains("region_first_next") {
         out.push("region_first_next");
     }
+    if result.contains("rootcause_label_guard") {
+        out.push("rootcause_label_guard");
+    }
     if result.contains("staged_depth_next") {
         out.push("staged_depth_next");
     }
@@ -426,6 +456,163 @@ fn classify_patterns(sub: &str, cmd: &str, result: &str, has_json_next: bool) ->
         out.push("pipe_query_redirect");
     }
     out
+}
+
+fn region_query_terms(cmd: &str) -> Option<Vec<String>> {
+    monogram_query_terms(cmd, &["region", "locate", "discover"])
+}
+
+fn monogram_query_terms(cmd: &str, allowed_subcommands: &[&str]) -> Option<Vec<String>> {
+    let idx = cmd_word_pos(cmd, "monogram")?;
+    let rest = cmd[idx + "monogram".len()..].trim_start();
+    let mut parts = rest.splitn(2, char::is_whitespace);
+    let sub = parts.next().unwrap_or("");
+    if !allowed_subcommands.contains(&sub) {
+        return None;
+    }
+    let query = first_shell_arg(parts.next().unwrap_or("").trim_start())?;
+    let terms = normalized_audit_terms(&query)
+        .into_iter()
+        .filter(|term| !is_region_drift_generic_term(term))
+        .collect::<Vec<_>>();
+    if terms.is_empty() {
+        None
+    } else {
+        Some(terms)
+    }
+}
+
+fn first_shell_arg(s: &str) -> Option<String> {
+    let mut chars = s.chars();
+    let first = chars.next()?;
+    if first == '"' || first == '\'' {
+        let quote = first;
+        let mut out = String::new();
+        let mut escaped = false;
+        for ch in chars {
+            if escaped {
+                out.push(ch);
+                escaped = false;
+            } else if ch == '\\' && quote == '"' {
+                escaped = true;
+            } else if ch == quote {
+                break;
+            } else {
+                out.push(ch);
+            }
+        }
+        return Some(out);
+    }
+    Some(
+        std::iter::once(first)
+            .chain(chars)
+            .take_while(|ch| !ch.is_whitespace())
+            .collect(),
+    )
+}
+
+fn normalized_audit_terms(query: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for raw in query.split(|c: char| c.is_whitespace() || c == '|') {
+        add_audit_term(&mut out, raw);
+        for part in raw.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-') {
+            add_audit_term(&mut out, part);
+        }
+    }
+    out
+}
+
+fn add_audit_term(out: &mut Vec<String>, raw: &str) {
+    let term: String = raw
+        .trim_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+        .flat_map(|c| c.to_lowercase())
+        .collect();
+    if term.len() < 3 || out.contains(&term) {
+        return;
+    }
+    out.push(term);
+}
+
+fn is_region_drift_generic_term(term: &str) -> bool {
+    matches!(
+        term,
+        "ownership"
+            | "owner"
+            | "owned"
+            | "boundary"
+            | "boundaries"
+            | "ref"
+            | "refs"
+            | "deref"
+            | "derefs"
+            | "retain"
+            | "retains"
+            | "release"
+            | "releases"
+            | "free"
+            | "frees"
+            | "string"
+            | "thread"
+            | "worker"
+            | "memory"
+            | "safety"
+    )
+}
+
+fn region_queries_drift(prev: &[String], next: &[String]) -> bool {
+    if prev.len() < 2 || next.len() < 2 {
+        return false;
+    }
+    let overlap = prev.iter().filter(|term| next.contains(*term)).count();
+    overlap == 0
+}
+
+fn backtick_spans(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = s;
+    while let Some(start) = rest.find('`') {
+        let after_start = &rest[start + 1..];
+        let Some(end) = after_start.find('`') else {
+            break;
+        };
+        let label = after_start[..end].trim();
+        if !label.is_empty() && !out.iter().any(|v| v == label) {
+            out.push(label.to_string());
+        }
+        rest = &after_start[end + 1..];
+    }
+    out
+}
+
+fn guard_forbidden_labels(result: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in result.lines() {
+        let low = line.to_ascii_lowercase();
+        let guard_start = ["do not label", "do not replace it with"]
+            .iter()
+            .filter_map(|needle| low.find(needle))
+            .min();
+        let Some(start) = guard_start else {
+            continue;
+        };
+        for label in backtick_spans(&line[start..]) {
+            if !out.iter().any(|v| v == &label) {
+                out.push(label);
+            }
+        }
+    }
+    out
+}
+
+fn rootcause_contains_label(rootcause: &str, label: &str) -> bool {
+    let label_terms = normalized_audit_terms(label);
+    if label_terms.is_empty() {
+        return false;
+    }
+    let root_terms = normalized_audit_terms(rootcause);
+    label_terms.iter().any(|term| root_terms.contains(term))
 }
 
 fn oversized_kind(sub: &str, result: &str, cmd: &str) -> String {
@@ -475,7 +662,10 @@ fn maker_recommendations(
                 && r.calls >= 10
                 && (map_count(&r.patterns, "region_first_next") > 0
                     || map_count(&r.patterns, "success_pattern_next") > 0
-                    || map_count(&r.patterns, "region_score_debug") > 0)
+                    || map_count(&r.patterns, "region_score_debug") > 0
+                    || map_count(&r.patterns, "systems_lifecycle_next") > 0
+                    || map_count(&r.patterns, "lifecycle_file_probe") > 0
+                    || map_count(&r.patterns, "region_contrast_lock") > 0)
         })
         .count();
     if closed_but_wrong > 0 {
@@ -493,6 +683,7 @@ fn maker_recommendations(
         + map_count(&total.patterns, "chain_depth_ge_3")
         + map_count(&total.patterns, "chain_callers_depth_ge_3")
         + map_count(&total.patterns, "search_explain_high_limit")
+        + map_count(&total.patterns, "fanout_preflight")
         + map_count(&total.patterns, "oversized_context_bundle")
         + map_count(&total.patterns, "oversized_search_explain")
         + oversized.len();
@@ -516,6 +707,82 @@ fn maker_recommendations(
             avoid: "treating guarded recovery as success by itself",
             prefer: "rewrite the recovery into region/query-facet candidates with explicit uncertainty and next proof steps",
             validate: "trace whether the run moves from guarded recovery to a smaller verified candidate set",
+        });
+    }
+
+    let lifecycle_proof_unresolved = rows
+        .iter()
+        .filter(|r| {
+            is_failure_grade(&r.grade)
+                && r.calls >= 10
+                && (map_count(&r.patterns, "systems_lifecycle_next") > 0
+                    || map_count(&r.patterns, "lifecycle_file_probe") > 0
+                    || map_count(&r.patterns, "free_site_triage") > 0)
+        })
+        .count();
+    if lifecycle_proof_unresolved > 0 {
+        out.push(MakerRecommendation {
+            signal: "lifecycle_proof_unresolved",
+            count: lifecycle_proof_unresolved,
+            why: "failure runs received lifecycle/root proof guidance but still widened or chose a nearby helper",
+            avoid: "adding more generic lifecycle prose without measuring whether the next command preserves the same file/object anchor",
+            prefer: "make lifecycle proof output compare the same-file operation, helper, and teardown candidates as a bounded contrast set",
+            validate: "trace the first command after systems_lifecycle_next or lifecycle_file_probe and confirm whether it stays on the guarded anchor",
+        });
+    }
+
+    let contrast_lock_unresolved = rows
+        .iter()
+        .filter(|r| {
+            is_failure_grade(&r.grade)
+                && r.calls >= 10
+                && map_count(&r.patterns, "region_contrast_lock") > 0
+        })
+        .count();
+    if contrast_lock_unresolved > 0 {
+        out.push(MakerRecommendation {
+            signal: "region_contrast_lock_unresolved",
+            count: contrast_lock_unresolved,
+            why: "failure runs saw a close-candidate contrast lock but did not resolve the bounded cone",
+            avoid: "treating close top regions as a reason to widen the query or raise output limits",
+            prefer: "rank the locked candidates with same-file context, depth-1 callers, and explicit operation-boundary evidence",
+            validate: "compare the commands after region_contrast_lock against the final ROOTCAUSE cone",
+        });
+    }
+
+    let region_query_drift = map_count(&total.patterns, "region_query_anchor_drift");
+    if region_query_drift > 0 {
+        out.push(MakerRecommendation {
+            signal: "region_query_anchor_drift",
+            count: region_query_drift,
+            why: "a run changed non-generic region query anchors between bounded region calls",
+            avoid: "widening from the current candidate cone into unrelated subsystem terms without carrying a stable anchor",
+            prefer: "keep at least one concrete symptom, operation, file, or coupling anchor when rerunning region",
+            validate: "compare adjacent region calls in trace; the later query should preserve a non-generic anchor or explicitly mark the pivot as contrast evidence",
+        });
+    }
+
+    let label_guard_pivot = map_count(&total.patterns, "rootcause_label_guard_pivot");
+    if label_guard_pivot > 0 {
+        out.push(MakerRecommendation {
+            signal: "rootcause_label_guard_pivot",
+            count: label_guard_pivot,
+            why: "a run received a root-cause label guard, then pivoted to disjoint query anchors",
+            avoid: "treating guard markers as decorative output while widening into another subsystem",
+            prefer: "preserve the guarded query anchor or make the next command a bounded contrast check",
+            validate: "trace the command immediately after [marker: rootcause_label_guard] and confirm whether it keeps an anchor",
+        });
+    }
+
+    let label_guard_ignored = map_count(&total.patterns, "rootcause_label_guard_ignored");
+    if label_guard_ignored > 0 {
+        out.push(MakerRecommendation {
+            signal: "rootcause_label_guard_ignored",
+            count: label_guard_ignored,
+            why: "a failure run received a guard that forbade a wrapper/mechanism label, but the final ROOTCAUSE used that forbidden label",
+            avoid: "adding more decorative guard text without measuring whether the solver obeys it",
+            prefer: "make guard violations auditable first, then improve ranking/proof output that locks the owner candidate",
+            validate: "inspect the guard line and final ROOTCAUSE; the forbidden label should not be a substring of the owner label",
         });
     }
 
@@ -560,6 +827,10 @@ pub fn audit(id: &str, files: &[String], stats: &[RunStats]) {
         .iter()
         .map(|s| (s.label.clone(), s.grade.clone()))
         .collect();
+    let rootcauses: HashMap<String, String> = stats
+        .iter()
+        .map(|s| (s.label.clone(), s.rootcause.clone()))
+        .collect();
     let mut rows: Vec<Row> = vec![];
     let mut total = Row::default();
     let mut oversized: Vec<Oversized> = vec![];
@@ -575,6 +846,9 @@ pub fn audit(id: &str, files: &[String], stats: &[RunStats]) {
             grade: grades.get(&label).cloned().unwrap_or_else(|| "?".into()),
             ..Row::default()
         };
+        let mut last_region_terms: Option<Vec<String>> = None;
+        let mut last_label_guard_terms: Option<Vec<String>> = None;
+        let mut forbidden_rootcause_labels: Vec<String> = Vec::new();
         for ev in calls {
             if ev.name != "Bash" {
                 continue;
@@ -597,8 +871,38 @@ pub fn audit(id: &str, files: &[String], stats: &[RunStats]) {
             if has_json_next {
                 row.json_next_hints += 1;
             }
+            let query_terms = monogram_query_terms(
+                &ev.cmd,
+                &["search", "grep", "refgrep", "context", "symbols", "chain"],
+            );
+            if let (Some(prev), Some(next)) = (&last_label_guard_terms, &query_terms) {
+                if region_queries_drift(prev, next) {
+                    inc(&mut row.patterns, "rootcause_label_guard_pivot");
+                    last_label_guard_terms = None;
+                }
+            }
             for pattern in classify_patterns(&sub, &ev.cmd, &ev.result, has_json_next) {
                 inc(&mut row.patterns, pattern);
+            }
+            if ev.result.contains("rootcause_label_guard") {
+                for label in guard_forbidden_labels(&ev.result) {
+                    if !forbidden_rootcause_labels.iter().any(|v| v == &label) {
+                        forbidden_rootcause_labels.push(label);
+                    }
+                }
+                if let Some(terms) = query_terms.clone() {
+                    last_label_guard_terms = Some(terms);
+                }
+            }
+            if sub == "region" {
+                if let Some(terms) = region_query_terms(&ev.cmd) {
+                    if let Some(prev) = &last_region_terms {
+                        if region_queries_drift(prev, &terms) {
+                            inc(&mut row.patterns, "region_query_anchor_drift");
+                        }
+                    }
+                    last_region_terms = Some(terms);
+                }
             }
             if ev.result.len() > 50_000 {
                 row.oversized += 1;
@@ -623,6 +927,16 @@ pub fn audit(id: &str, files: &[String], stats: &[RunStats]) {
                 if row.examples.len() < 3 {
                     row.examples
                         .push((kind.into(), ev.cmd.clone(), first_signal(&ev.result)));
+                }
+            }
+        }
+        if is_failure_grade(&row.grade) {
+            if let Some(rootcause) = rootcauses.get(&label) {
+                if forbidden_rootcause_labels
+                    .iter()
+                    .any(|label| rootcause_contains_label(rootcause, label))
+                {
+                    inc(&mut row.patterns, "rootcause_label_guard_ignored");
                 }
             }
         }
@@ -733,7 +1047,11 @@ fn print_map(title: &str, map: &BTreeMap<String, usize>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_patterns, issue_kind, maker_recommendations, monogram_sub, Row};
+    use super::{
+        classify_patterns, guard_forbidden_labels, issue_kind, maker_recommendations,
+        monogram_query_terms, monogram_sub, region_queries_drift, region_query_terms,
+        rootcause_contains_label, Row,
+    };
     use std::collections::BTreeMap;
 
     #[test]
@@ -764,6 +1082,93 @@ mod tests {
             false,
         );
         assert!(patterns.contains(&"region_score_debug"));
+    }
+
+    #[test]
+    fn rootcause_label_guard_is_a_command_shape_pattern() {
+        let patterns = classify_patterns(
+            "grep",
+            "monogram grep \"switch.*tag\" --chain --depth 1",
+            "[marker: rootcause_label_guard]\n",
+            false,
+        );
+        assert!(patterns.contains(&"rootcause_label_guard"));
+    }
+
+    #[test]
+    fn lifecycle_and_contrast_markers_are_command_shape_patterns() {
+        let patterns = classify_patterns(
+            "region",
+            "monogram region \"session teardown\" -n 5 --score-debug",
+            "[marker: systems_lifecycle_next]\n[marker: lifecycle_file_probe]\n[marker: lifecycle_owner_contrast]\n[marker: lifecycle_owner_helper_contrast]\n[marker: broad_lifecycle_or_redirect]\n[marker: answer_not_ready]\n[marker: region_contrast_lock]\n[marker: guarded_anchor_preserve]\n[marker: bounded_contrast_only]\n",
+            false,
+        );
+        assert!(patterns.contains(&"systems_lifecycle_next"));
+        assert!(patterns.contains(&"lifecycle_file_probe"));
+        assert!(patterns.contains(&"lifecycle_owner_contrast"));
+        assert!(patterns.contains(&"lifecycle_owner_helper_contrast"));
+        assert!(patterns.contains(&"broad_lifecycle_or_redirect"));
+        assert!(patterns.contains(&"answer_not_ready"));
+        assert!(patterns.contains(&"region_contrast_lock"));
+        assert!(patterns.contains(&"guarded_anchor_preserve"));
+        assert!(patterns.contains(&"bounded_contrast_only"));
+    }
+
+    #[test]
+    fn rootcause_label_guard_forbidden_label_matches_wrapper_not_owner() {
+        let result = "[WARN] ffi_owner_rootcause_hint: `toThreadSafe` delegates across the C-ABI boundary into `BunString__toThreadSafe`.\n  ROOTCAUSE label guard: if `BunString__toThreadSafe` owns the imbalance, answer `ROOTCAUSE: <owner-file>::BunString__toThreadSafe`; do not label the thin wrapper `toThreadSafe` unless the owner is disproven.";
+        assert_eq!(guard_forbidden_labels(result), vec!["toThreadSafe"]);
+        assert!(rootcause_contains_label(
+            "ROOTCAUSE: src/string.zig::String::toThreadSafe",
+            "toThreadSafe"
+        ));
+        assert!(!rootcause_contains_label(
+            "ROOTCAUSE: src/bun.js/bindings/BunString.cpp::BunString__toThreadSafe",
+            "toThreadSafe"
+        ));
+    }
+
+    #[test]
+    fn label_guard_followup_terms_detect_disjoint_pivot() {
+        let guard = monogram_query_terms(
+            "monogram grep \"switch.*tag\" --chain --depth 1 -n 10",
+            &["grep", "search"],
+        )
+        .unwrap();
+        let pivot = monogram_query_terms(
+            "monogram search \"N-API string napi\" -n 5 --explain",
+            &["grep", "search"],
+        )
+        .unwrap();
+        assert!(region_queries_drift(&guard, &pivot));
+    }
+
+    #[test]
+    fn region_query_anchor_drift_detects_disjoint_specific_terms() {
+        let first = region_query_terms(
+            "monogram region \"ownership boundary ref deref leakRef isolatedCopy\" -n 5 --score-debug",
+        )
+        .unwrap();
+        let second = region_query_terms(
+            "monogram region \"String thread worker transferToJS fromJS thread transfer\" -n 5 --score-debug",
+        )
+        .unwrap();
+
+        assert!(region_queries_drift(&first, &second));
+    }
+
+    #[test]
+    fn region_query_anchor_drift_preserves_shared_specific_anchor() {
+        let first = region_query_terms(
+            "monogram region \"ownership boundary ref deref leakRef isolatedCopy\" -n 5 --score-debug",
+        )
+        .unwrap();
+        let second = region_query_terms(
+            "monogram region \"leakRef thread transfer evidence\" -n 5 --score-debug",
+        )
+        .unwrap();
+
+        assert!(!region_queries_drift(&first, &second));
     }
 
     #[test]

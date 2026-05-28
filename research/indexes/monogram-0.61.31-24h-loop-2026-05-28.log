@@ -1,0 +1,260 @@
+
+===== 2026-05-28 09:46:57 KST :: 24h supervisor boot =====
+monobench 0.1.34
+monogram 0.61.31
+
+===== 2026-05-28 09:49:05 KST :: 24h supervisor boot =====
+monobench 0.1.34
+monogram 0.61.31
+/Users/macbook/.openclis/bin/monobench
+/Users/macbook/.openclis/bin/monogram
+
+
+===== 2026-05-28 09:51:58 KST :: 24h supervisor boot =====
+monobench 0.1.34
+monogram 0.61.31
+/Users/macbook/.openclis/bin/monobench
+/Users/macbook/.openclis/bin/monogram
+
+
+===== 2026-05-28 09:52:53 KST :: 24h supervisor boot =====
+monobench 0.1.34
+monogram 0.61.31
+/Users/macbook/.openclis/bin/monobench
+/Users/macbook/.openclis/bin/monogram
+
+===== 2026-05-28 09:52:53 KST :: initial active solver rows =====
+
+===== 2026-05-28 09:54:22 KST :: 24h supervisor boot =====
+monobench 0.1.34
+monogram 0.61.31
+/Users/macbook/.openclis/bin/monobench
+/Users/macbook/.openclis/bin/monogram
+
+===== 2026-05-28 09:54:22 KST :: initial active solver rows =====
+
+===== 2026-05-28 09:54:22 KST :: pre-existing current reports =====
+
+===== 2026-05-28 09:54:22 KST :: report dotnet-124796-wmiinterop-keepalive =====
+[INFO] dotnet-124796-wmiinterop-keepalive · 3 runs · 1 envs · 1 arms · 0 failed · 3 pending-review
+
+════════════════════════════════════════════════════════════════════════════════════════════════════
+PER-RUN RESULTS  (every run, grouped by CLI/MODEL — consistency)
+════════════════════════════════════════════════════════════════════════════════════════════════════
+
+  CLAUDE/HAIKU  (3)
+  ──────────────────────────────────────────────────────────────────────────────────────────────────
+  run                                                  started grade       cost$   time  calls  mono
+  monogram-0.61.31-claude-haiku-r1-t1779901436293 05-27 17:03Z MISS        $0.62   384s    49c    ·5  auto-only  [haiku-v06131-clean-newfam-r4j3] clean n…hapes; hunt monogram-attributable decoy
+  monogram-0.61.31-claude-haiku-r2-t1779901622832 05-27 17:07Z FULL        $0.22   170s    15c    ·8  auto-only  [haiku-v06131-clean-newfam-r4j3] clean n…hapes; hunt monogram-attributable decoy
+  monogram-0.61.31-claude-haiku-r3-t1779901805531 05-27 17:10Z FULL        $0.26   199s    23c    ·8  auto-only  [haiku-v06131-clean-newfam-r4j3] clean n…hapes; hunt monogram-attributable decoy
+
+════════════════════════════════════════════════════════════════════════════════════════════════════
+AGGREGATE  (median per arm — failures excluded)
+════════════════════════════════════════════════════════════════════════════════════════════════════
+  arm                   n  FULL    med$ medTok medTime calls min–med–max  mono%
+
+  CLAUDE/HAIKU
+  ──────────────────────────────────────────────────────────────────────────────────────────────────
+  monogram @0.61.31     3   2/3   $0.26  1.42M    199s          15–23–49    24%
+
+[NEXT]
+  3 run(s) need final review: monobench judge dotnet-124796-wmiinterop-keepalive <run> --model <judge-model>
+  monobench adoption dotnet-124796-wmiinterop-keepalive   # tool-call breakdown
+  monobench show dotnet-124796-wmiinterop-keepalive --spoil   # answer key
+
+mono% = monogram share of tool calls · sampling n=1 → 3 → 5/9 (SPEC §6)
+
+===== 2026-05-28 09:54:22 KST :: adoption dotnet-124796-wmiinterop-keepalive =====
+[INFO] adoption · dotnet-124796-wmiinterop-keepalive · 3 runs
+
+════════════════════════════════════════════════════════════════════════════════
+TOOL ADOPTION  (did the agent USE monogram — how much, how early, how well)
+════════════════════════════════════════════════════════════════════════════════
+
+  CLAUDE/HAIKU
+  ──────────────────────────────────────────────────────────────────────────────
+  run                      calls  mono  share  first  fails
+  monogram-0.61.31-claude-haiku-r1-t1779901436293    49     5    10%     #1     ⚠2
+        ↳ search×2  ?×1  stats×1  -0.61.31-claude-haiku-r1-t1779901436293-67609×1
+  monogram-0.61.31-claude-haiku-r2-t1779901622832    15     8    53%     #1      0
+        ↳ grep×3  search×2  stats×1  region×1  context×1  · 1g guarded
+  monogram-0.61.31-claude-haiku-r3-t1779901805531    23     8    35%     #1      0
+        ↳ search×2  coupling×2  grep×2  ?×1  region×1
+
+first = call # of first monogram use (late ⇒ grepped first)
+fails = dead no-match (denied or no marker/NEXT) · Ng = guarded no-match (recovered via marker+NEXT) · git = history-access attempts (must be denied)
+low share or late first-use ⇒ the tool was not really tested (SPEC §7)
+
+[NEXT]
+  monobench report dotnet-124796-wmiinterop-keepalive                        # grade × cost × adoption per arm
+  monobench evidence dotnet-124796-wmiinterop-keepalive --pattern monogram   # which runs actually leaned on the tool
+
+===== 2026-05-28 09:54:22 KST :: report swift-88509-demangler-uaf =====
+[INFO] swift-88509-demangler-uaf · 3 runs · 1 envs · 1 arms · 0 failed · 3 pending-review
+
+════════════════════════════════════════════════════════════════════════════════════════════════════
+PER-RUN RESULTS  (every run, grouped by CLI/MODEL — consistency)
+════════════════════════════════════════════════════════════════════════════════════════════════════
+
+  CLAUDE/HAIKU  (3)
+  ──────────────────────────────────────────────────────────────────────────────────────────────────
+  run                                                  started grade       cost$   time  calls  mono
+  monogram-0.61.31-claude-haiku-r1-t1779901436293 05-27 17:03Z FULL        $0.27   137s    27c   ·17  auto-only  [haiku-v06131-clean-newfam-r4j3] clean n…hapes; hunt monogram-attributable decoy
+  monogram-0.61.31-claude-haiku-r2-t1779901638793 05-27 17:07Z FULL        $0.21   101s    18c    ·7  auto-only  [haiku-v06131-clean-newfam-r4j3] clean n…hapes; hunt monogram-attributable decoy
+  monogram-0.61.31-claude-haiku-r3-t1779901957040 05-27 17:12Z FULL        $0.20   123s    18c    ·8  auto-only  [haiku-v06131-clean-newfam-r4j3] clean n…hapes; hunt monogram-attributable decoy
+
+════════════════════════════════════════════════════════════════════════════════════════════════════
+AGGREGATE  (median per arm — failures excluded)
+════════════════════════════════════════════════════════════════════════════════════════════════════
+  arm                   n  FULL    med$ medTok medTime calls min–med–max  mono%
+
+  CLAUDE/HAIKU
+  ──────────────────────────────────────────────────────────────────────────────────────────────────
+  monogram @0.61.31     3   3/3   $0.21  1.07M    123s          18–18–27    51%
+
+[NEXT]
+  3 run(s) need final review: monobench judge swift-88509-demangler-uaf <run> --model <judge-model>
+  monobench adoption swift-88509-demangler-uaf   # tool-call breakdown
+  monobench show swift-88509-demangler-uaf --spoil   # answer key
+
+mono% = monogram share of tool calls · sampling n=1 → 3 → 5/9 (SPEC §6)
+
+===== 2026-05-28 09:54:22 KST :: adoption swift-88509-demangler-uaf =====
+[INFO] adoption · swift-88509-demangler-uaf · 3 runs
+
+════════════════════════════════════════════════════════════════════════════════
+TOOL ADOPTION  (did the agent USE monogram — how much, how early, how well)
+════════════════════════════════════════════════════════════════════════════════
+
+  CLAUDE/HAIKU
+  ──────────────────────────────────────────────────────────────────────────────
+  run                      calls  mono  share  first  fails
+  monogram-0.61.31-claude-haiku-r1-t1779901436293    27    17    63%     #1     ⚠1
+        ↳ grep×7  search×4  stats×2  ?×1  region×1  context×1  …  · 1g guarded
+  monogram-0.61.31-claude-haiku-r2-t1779901638793    18     7    39%     #1      0
+        ↳ search×3  grep×2  ?×1  context×1
+  monogram-0.61.31-claude-haiku-r3-t1779901957040    18     8    44%     #1      0
+        ↳ grep×5  search×2  ?×1  · 2g guarded
+
+first = call # of first monogram use (late ⇒ grepped first)
+fails = dead no-match (denied or no marker/NEXT) · Ng = guarded no-match (recovered via marker+NEXT) · git = history-access attempts (must be denied)
+low share or late first-use ⇒ the tool was not really tested (SPEC §7)
+
+[NEXT]
+  monobench report swift-88509-demangler-uaf                        # grade × cost × adoption per arm
+  monobench evidence swift-88509-demangler-uaf --pattern monogram   # which runs actually leaned on the tool
+
+===== 2026-05-28 09:54:22 KST :: report node-62325-zlib-reset-write =====
+[INFO] node-62325-zlib-reset-write · 7 runs · 3 envs · 4 arms · 10 failed · 14 pending-review
+
+════════════════════════════════════════════════════════════════════════════════════════════════════════
+PER-RUN RESULTS  (every run, grouped by CLI/MODEL — consistency)
+════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+  CLAUDE/HAIKU  (3)
+  ──────────────────────────────────────────────────────────────────────────────────────────────────────
+  run                                                      started grade       cost$   time  calls  mono
+  baseline-claude-haiku-r1-t1779685288430             05-25 05:01Z FULL        $0.30   259s    29c    ·0  auto-only
+  monogram-0.61.31-claude-haiku-r2-t1779901514126     05-27 17:05Z FULL        $0.21   108s    22c    ·4  auto-only  [haiku-v06131-clean-newfam-r4j3] clean n…hapes; hunt monogram-attributable decoy
+  monogram-0.61.31-claude-haiku-r3-t1779901746198     05-27 17:09Z FULL        $0.40   201s    45c    ·6  auto-only  [haiku-v06131-clean-newfam-r4j3] clean n…hapes; hunt monogram-attributable decoy
+
+  CODEX/GPT-5.4-MINI@LOW  (3)
+  ──────────────────────────────────────────────────────────────────────────────────────────────────────
+  run                                                      started grade       cost$   time  calls  mono
+  baseline-codex-gpt-5.4-mini-low-r1-t1779727338588   05-25 16:42Z FULL        $0.06    47s    13c    ·0  reviewed
+  baseline-codex-gpt-5.4-mini-low-r2-t1779727406411   05-25 16:43Z FULL        $0.11    57s    16c    ·0  reviewed
+  baseline-codex-gpt-5.4-mini-low-r3-t1779727477898   05-25 16:44Z FULL        $0.06    44s    15c    ·0  reviewed
+
+  AGY/GEMINI-3.5-FLASH@LOW  (1)
+  ──────────────────────────────────────────────────────────────────────────────────────────────────────
+  run                                                      started grade       cost$   time  calls  mono
+  baseline-agy-gemini-3.5-flash-low-r1-t1779722305145 05-25 15:18Z FULL            —    64s    16c    ·0  auto-only
+
+════════════════════════════════════════════════════════════════════════════════════════════════════════
+AGGREGATE  (median per arm — failures excluded)
+════════════════════════════════════════════════════════════════════════════════════════════════════════
+  arm                   n  FULL    med$ medTok medTime calls min–med–max  mono%
+
+  CLAUDE/HAIKU
+  ──────────────────────────────────────────────────────────────────────────────────────────────────────
+  baseline              1   1/1   $0.30  1.87M    259s          29–29–29     0%
+  monogram @0.61.31     2   2/2   $0.31  1.95M    155s          22–34–45    15%
+
+  CODEX/GPT-5.4-MINI@LOW
+  ──────────────────────────────────────────────────────────────────────────────────────────────────────
+  baseline              3   3/3   $0.06   359k     47s          13–15–16     0%
+
+  AGY/GEMINI-3.5-FLASH@LOW
+  ──────────────────────────────────────────────────────────────────────────────────────────────────────
+  baseline              1   1/1       —      —     64s          16–16–16     0%
+
+════════════════════════════════════════════════════════════════════════════════════════════════════════
+FAILURES & INCOMPLETE  (excluded from medians)
+════════════════════════════════════════════════════════════════════════════════════════════════════════
+  baseline-agy-gemini-3.5-flash-low-r1-t1779721003561 05-25 14:56Z NO_RESULT — incomplete / over budget
+  baseline-agy-gemini-3.5-flash-low-r2-t1779721069643 05-25 14:57Z NO_RESULT — incomplete / over budget
+  baseline-agy-gemini-3.5-flash-low-r3-t1779721100655 05-25 14:58Z NO_RESULT — incomplete / over budget
+  baseline-agy-gemini-3.5-flash-low-r4-t1779721130175 05-25 14:58Z NO_RESULT — incomplete / over budget
+  baseline-agy-gemini-3.5-flash-low-r5-t1779721155070 05-25 14:59Z NO_RESULT — incomplete / over budget
+  baseline-agy-gemini-3.5-flash-low-r2-t1779722395547 05-25 15:19Z NO_RESULT — incomplete / over budget
+  baseline-agy-gemini-3.5-flash-low-r3-t1779722433994 05-25 15:20Z NO_RESULT — incomplete / over budget
+  baseline-agy-gemini-3.5-flash-low-r4-t1779722461549 05-25 15:21Z NO_RESULT — incomplete / over budget
+  baseline-agy-gemini-3.5-flash-low-r5-t1779722486113 05-25 15:21Z NO_RESULT — incomplete / over budget
+  monogram-0.61.31-claude-haiku-r1-t1779901436293     05-27 17:03Z NO_RESULT — incomplete / over budget
+
+[NEXT]
+  14 run(s) need final review: monobench judge node-62325-zlib-reset-write <run> --model <judge-model>
+  monobench adoption node-62325-zlib-reset-write   # tool-call breakdown
+  monobench show node-62325-zlib-reset-write --spoil   # answer key
+
+mono% = monogram share of tool calls · sampling n=1 → 3 → 5/9 (SPEC §6)
+
+===== 2026-05-28 09:54:22 KST :: adoption node-62325-zlib-reset-write =====
+[INFO] adoption · node-62325-zlib-reset-write · 8 runs
+
+════════════════════════════════════════════════════════════════════════════════
+TOOL ADOPTION  (did the agent USE monogram — how much, how early, how well)
+════════════════════════════════════════════════════════════════════════════════
+
+  CLAUDE/HAIKU
+  ──────────────────────────────────────────────────────────────────────────────
+  run                      calls  mono  share  first  fails
+  baseline-claude-haiku-r1-t1779685288430    29     0     0%      —      —
+        ↳ (control — no tool)   · git 2 attempts (all denied ✓)
+  monogram-0.61.31-claude-haiku-r2-t1779901514126    22     4    18%     #1      0
+        ↳ grep×2  ?×1  search×1
+  monogram-0.61.31-claude-haiku-r3-t1779901746198    45     6    13%     #1      0
+        ↳ search×2  ?×1  symbols×1  grep×1  chain×1
+
+  CODEX/GPT-5.4-MINI@LOW
+  ──────────────────────────────────────────────────────────────────────────────
+  run                      calls  mono  share  first  fails
+  baseline-codex-gpt-5.4-mini-low-r1-t1779727338588    13     0     0%      —      —
+        ↳ (control — no tool)
+  baseline-codex-gpt-5.4-mini-low-r2-t1779727406411    16     0     0%      —      —
+        ↳ (control — no tool)
+  baseline-codex-gpt-5.4-mini-low-r3-t1779727477898    15     0     0%      —      —
+        ↳ (control — no tool)   · git 1 attempt (all denied ✓)
+
+  AGY/GEMINI-3.5-FLASH@LOW
+  ──────────────────────────────────────────────────────────────────────────────
+  run                      calls  mono  share  first  fails
+  baseline-agy-gemini-3.5-flash-low-r1-t1779721003561    23     0     0%      —      —
+        ↳ (control — no tool)
+  baseline-agy-gemini-3.5-flash-low-r1-t1779722305145    16     0     0%      —      —
+        ↳ (control — no tool)
+
+first = call # of first monogram use (late ⇒ grepped first)
+fails = dead no-match (denied or no marker/NEXT) · Ng = guarded no-match (recovered via marker+NEXT) · git = history-access attempts (must be denied)
+low share or late first-use ⇒ the tool was not really tested (SPEC §7)
+
+[NEXT]
+  monobench report node-62325-zlib-reset-write                        # grade × cost × adoption per arm
+  monobench evidence node-62325-zlib-reset-write --pattern monogram   # which runs actually leaned on the tool
+
+===== 2026-05-28 09:54:22 KST :: START sweep fresh-lifetime-a tag=haiku-v06131-24h-20260528-fresh-lifetime-a-r2j3 =====
+instances: dotnet-125293-gchandle-doublefree-race,envoy-45153-filestreamer-cancel-uaf,flutter-170284-surfacetexture-doublefree,grpc-39316-rls-shutdown-uaf,openresty-2483-luapipe-quic-uaf,php-19591-lexbor-mraw-uaf
+sweep 6 instance(s) over 6 repo(s) · {monogram} × cli=claude × model=haiku × via=direct × runs=2 = 12 runs · jobs=3
+  per-repo lock: same-repo worktree-adds serialize, different repos run in parallel
+prepare dotnet-125293-gchandle-doublefree-race/monogram on /tmp/monobench-work/runtime -> /Users/macbook/Projects/monolex/monolex/monologue/demo/monobench/results/dotnet-125293-gchandle-doublefree-race/_prepare-monogram-t1779929662903.index.log

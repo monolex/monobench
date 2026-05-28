@@ -82,10 +82,14 @@ pub fn grade_text_str(inst: &Inst, text: &str) -> &'static str {
         return "NO_RESULT";
     }
     let t = text.to_lowercase();
-    let root_line = rootcause_line(text).to_lowercase();
-    let has_root_line = root_line != "(no rootcause line)";
-    let root_named = has(&inst.full, &root_line);
-    let root_decoy = has(&inst.decoy, &root_line);
+    let root_lines = rootcause_lines(text);
+    let has_root_line = !root_lines.is_empty();
+    let root_named = root_lines
+        .iter()
+        .any(|line| has(&inst.full, &line.to_lowercase()));
+    let root_decoy = root_lines
+        .iter()
+        .any(|line| has(&inst.decoy, &line.to_lowercase()));
     if root_named && has(&inst.mech, &t) {
         "FULL"
     } else if root_named {
@@ -175,20 +179,32 @@ pub fn strip_worktree_prefix(line: &str) -> String {
 
 const ROOTCAUSE_LINE_CAP: usize = 240;
 
-fn rootcause_line(t: &str) -> String {
+fn rootcause_lines(t: &str) -> Vec<String> {
     // Demark markdown bold/code so a claude `**ROOTCAUSE**:` (colon outside the bold) or a
     // backticked `` `ROOTCAUSE:` `` is still recognized as the conclusion line. Otherwise it is
     // missed and grading falls through to imprecise whole-text matching that ignores the
     // root-line precedence (a decoy conclusion could then grade FULL off a body mention).
     let demark = |s: &str| s.replace("**", "").replace('`', "");
     t.lines()
-        .find(|l| demark(&l.to_lowercase()).contains("rootcause:"))
-        .map(|l| {
-            strip_worktree_prefix(&demark(l))
-                .chars()
-                .take(ROOTCAUSE_LINE_CAP)
-                .collect()
+        .filter_map(|l| {
+            let line = demark(l);
+            if !line.to_lowercase().contains("rootcause:") {
+                return None;
+            }
+            Some(
+                strip_worktree_prefix(&line)
+                    .chars()
+                    .take(ROOTCAUSE_LINE_CAP)
+                    .collect::<String>(),
+            )
         })
+        .collect()
+}
+
+fn rootcause_line(t: &str) -> String {
+    rootcause_lines(t)
+        .into_iter()
+        .next()
         .unwrap_or_else(|| "(no ROOTCAUSE line)".into())
 }
 
@@ -432,6 +448,22 @@ FIX: release the old ref";
 ROOTCAUSE: src/bun.js/bindings/BunString.cpp::toCrossThreadShareable\n\
 FIX: release the old ref";
         assert_eq!(grade_text_str(&inst, decoy), "DECOY");
+    }
+
+    #[test]
+    fn multiple_rootcause_lines_can_recover_specific_owner() {
+        let inst = Inst {
+            full: vec!["BufferOutputSink.runOutputSink".into()],
+            mech: vec!["use-after-free".into(), "double-free".into()],
+            decoy: vec!["NodeHTTPResponse".into()],
+            invalid: None,
+        };
+        let answer = "The mechanism is a double-free / use-after-free in the response wrapper.\n\
+**ROOTCAUSE:** double-free of the Response object in the buffered transform error path.\n\
+That mechanism is owned by the following concrete code site.\n\
+ROOTCAUSE: src/bun.js/api/html_rewriter.zig::BufferOutputSink.runOutputSink\n\
+FIX: remove the premature finalizer";
+        assert_eq!(grade_text_str(&inst, answer), "FULL");
     }
 
     #[test]

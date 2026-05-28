@@ -263,7 +263,7 @@ fn scan_command(signals: &mut Vec<Signal>, cmd: &str, denied: bool, own_runid: &
     }
     if cmd_has_word(cmd, "monogram") {
         match monogram_sub(cmd).as_deref() {
-            Some("index") | Some("reindex") if denied => {
+            Some("index") | Some("reindex") | Some("prune") if denied => {
                 add(signals, "watch", 15, "solver_prepared_reindex_blocked", cmd)
             }
             Some("index") | Some("reindex") => {
@@ -276,6 +276,11 @@ fn scan_command(signals: &mut Vec<Signal>, cmd: &str, denied: bool, own_runid: &
                 add(signals, "watch", 15, "solver_started_monogram_service", cmd)
             }
             _ => {}
+        }
+        if denied && monogram_boot_init(cmd) {
+            add(signals, "watch", 15, "solver_prepared_reindex_blocked", cmd);
+        } else if monogram_boot_init(cmd) {
+            add(signals, "high", 30, "solver_mutated_monogram_index", cmd);
         }
         if denied && monogram_reindex_flag(cmd) {
             add(signals, "watch", 15, "solver_prepared_reindex_blocked", cmd);
@@ -618,6 +623,16 @@ fn monogram_reindex_flag(cmd: &str) -> bool {
         .any(|tok| matches!(tok.trim_matches(['"', '\'']), "-r" | "--reindex"))
 }
 
+fn monogram_boot_init(cmd: &str) -> bool {
+    let Some(idx) = crate::util::cmd_word_pos(cmd, "monogram") else {
+        return false;
+    };
+    let mut words = cmd[idx + 8..]
+        .split_whitespace()
+        .map(|tok| tok.trim_matches(['"', '\'']));
+    matches!(words.next(), Some("boot" | "b")) && matches!(words.next(), Some("init"))
+}
+
 fn first_line(s: &str) -> String {
     s.lines()
         .map(str::trim)
@@ -700,6 +715,20 @@ mod tests {
         assert!(!signals
             .iter()
             .any(|s| s.kind == "solver_reindexed_monogram"));
+    }
+
+    #[test]
+    fn blocked_prepared_mutation_commands_are_not_scored_as_mutation() {
+        for cmd in ["monogram prune --force", "monogram boot init"] {
+            let mut signals: Vec<Signal> = vec![];
+            scan_command(&mut signals, cmd, true, "");
+            assert!(signals
+                .iter()
+                .any(|s| s.kind == "solver_prepared_reindex_blocked"));
+            assert!(!signals
+                .iter()
+                .any(|s| s.kind == "solver_mutated_monogram_index"));
+        }
     }
 
     #[test]

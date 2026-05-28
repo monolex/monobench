@@ -27,11 +27,55 @@ problem instance
 | System | Role in the loop |
 |---|---|
 | monobench | Runs controlled experiments, preserves telemetry, exposes adoption, drift, output, and grading evidence. |
+| monogram-language | Derives language/runtime lifecycle role profiles from corpus repositories; produces evidence priors only. |
 | monogram | Provides code-search primitives: trigram search, region, grep/refs, context, chain/tree, coupling, metrics, audits, and NEXT guidance. |
 | monogram maker | Converts repeated evidence patterns into generalized implementation changes: primitive, score, budget, proof marker, or NEXT. |
 | monomento | Supplies scoring discipline and memory navigation: IDF-like damping, coverage, length normalization, explain fields, and searchable exported transcripts. |
 | NIIA | Keeps durable research notes, handoff context, and cross-session loop continuity. |
 | monokist | Keeps structural relationships between methods, evidence, command flows, and implementation boundaries. |
+
+## Three-CLI Branch: 2026-05-28
+
+The loop has now split into three CLI responsibilities:
+
+```text
+monogram-language
+  -> analyzes language/core/runtime repositories
+  -> emits .niia/monogram-language/<lang>.json profile evidence
+  -> must not learn benchmark answers
+
+monogram
+  -> consumes profile priors later through query-aware score terms
+  -> must keep score-debug explainable
+  -> must not grow inline language string lists without corpus evidence
+
+monobench
+  -> validates behavior as a canary
+  -> preserves traces and failure shapes
+  -> must not feed root-cause literals back into tools
+```
+
+Current owner split:
+
+```text
+Another session may own active development of:
+  tauri-apps/lib-monogram-language/
+
+This loop session may own:
+  monobench/monogram loop docs
+  .claude skill handoff docs
+  read-only monobench status/report/adoption/trace inspection
+```
+
+Return point:
+
+```text
+tauri-apps/lib-monogram/docs/MONOGRAM-LANGUAGE-THREE-CLI-ARCHITECTURE-2026-05-28.md
+```
+
+If another session is actively editing `lib-monogram-language`, do not make
+conflicting edits there. Treat profile generation as an external evidence input
+until that session hands back a stable profile format.
 
 ## Epistemic Scoring Principle
 

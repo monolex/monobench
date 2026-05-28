@@ -41,6 +41,7 @@ fn flag_takes_value(flag: &str) -> bool {
             | "--effort"
             | "--tools"
             | "--runs"
+            | "--run"
             | "--jobs"
             | "--isolate"
             | "--tag"
@@ -662,6 +663,65 @@ fn telemetry_paths(d: &Path) -> Vec<String> {
     v
 }
 
+fn run_meta_string(root: &Path, id: &str, run: &str, key: &str) -> Option<String> {
+    run_meta::load(root, id, run)?
+        .get(key)?
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+fn analysis_run_matches(
+    root: &Path,
+    id: &str,
+    label: &str,
+    tag_filter: Option<&str>,
+    run_filter: Option<&str>,
+) -> bool {
+    if run_filter.is_some_and(|run| label != run) {
+        return false;
+    }
+    if let Some(tag) = tag_filter {
+        return run_meta_string(root, id, label, "tag").as_deref() == Some(tag);
+    }
+    true
+}
+
+fn filter_run_stats_for_analysis(
+    root: &Path,
+    id: &str,
+    runs: Vec<RunStats>,
+    tag_filter: Option<&str>,
+    run_filter: Option<&str>,
+) -> Vec<RunStats> {
+    if tag_filter.is_none() && run_filter.is_none() {
+        return runs;
+    }
+    runs.into_iter()
+        .filter(|r| analysis_run_matches(root, id, &r.label, tag_filter, run_filter))
+        .collect()
+}
+
+fn filter_telemetry_paths_for_analysis(
+    root: &Path,
+    id: &str,
+    files: Vec<String>,
+    tag_filter: Option<&str>,
+    run_filter: Option<&str>,
+) -> Vec<String> {
+    if tag_filter.is_none() && run_filter.is_none() {
+        return files;
+    }
+    files
+        .into_iter()
+        .filter(|f| {
+            let label = telemetry::label_from_path(f);
+            analysis_run_matches(root, id, &label, tag_filter, run_filter)
+        })
+        .collect()
+}
+
 fn result_stems(d: &Path) -> Vec<String> {
     let suffixes = [
         ".answer.txt",
@@ -1146,13 +1206,14 @@ fn integrity_report(root: &Path, id: &str, run_arg: Option<&str>, detail: bool) 
         .iter()
         .map(|run| {
             let event = preferred_event_path(root, id, run);
-            integrity::scan_run(
+            integrity::scan_run_with_answer(
                 run,
                 stats.get(run).map(String::as_str).unwrap_or("?"),
                 event.as_deref(),
                 &d.join(format!("{run}.index.log")),
-                !run_answer_text(root, id, run).trim().is_empty(),
+                &run_answer_text(root, id, run),
                 &d.join(format!("{run}.running")),
+                id,
             )
         })
         .collect();
@@ -2073,15 +2134,38 @@ fn main() {
         }
 
         "monogram-audit" => {
-            let id = a(1).unwrap_or_else(|| die("usage: monobench monogram-audit <id>"));
-            monogram_audit::audit(
+            let id = a(1).unwrap_or_else(|| {
+                die("usage: monobench monogram-audit <id> [--tag T] [--run RUN]")
+            });
+            let tag_filter = arg_any_value(&args, &["--tag", "--batch"]);
+            let run_filter = arg_value(&args, "--run").map(|run| resolve_run_stem(&root, id, &run));
+            let files = filter_telemetry_paths_for_analysis(
+                &root,
                 id,
-                &telemetry_paths(&root.join("results").join(id)),
-                &gather_runs(&root, id),
+                telemetry_paths(&root.join("results").join(id)),
+                tag_filter.as_deref(),
+                run_filter.as_deref(),
             );
+            let stats = filter_run_stats_for_analysis(
+                &root,
+                id,
+                gather_runs(&root, id),
+                tag_filter.as_deref(),
+                run_filter.as_deref(),
+            );
+            if tag_filter.is_some() || run_filter.is_some() {
+                println!(
+                    "[filter] tag={} run={} telemetry={} stats={}",
+                    tag_filter.as_deref().unwrap_or("-"),
+                    run_filter.as_deref().unwrap_or("-"),
+                    files.len(),
+                    stats.len()
+                );
+            }
+            monogram_audit::audit(id, &files, &stats);
             println!("\n[NEXT]");
             println!(
-                "  monobench evidence {id} --pattern 'region_first_next|success_pattern_next|score-debug|ROOTCAUSE'  # verify maker recommendations"
+                "  monobench evidence {id} --pattern 'region_first_next|systems_lifecycle_next|ROOTCAUSE'  # verify maker recommendations"
             );
             println!(
                 "  monobench trace {id} <run>                   # classify: path not closed vs closed but uncalibrated"
@@ -2823,6 +2907,69 @@ mod main_tests {
         let event = dir.join(format!("{run}.agy.jsonl"));
         std::fs::write(&event, b"").unwrap();
         assert_eq!(preferred_event_path(&root, id, run), Some(event));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn analysis_filters_keep_matching_tag_and_run() {
+        let root = std::env::temp_dir().join(format!(
+            "monobench-test-{}-{}",
+            std::process::id(),
+            "analysis-filter"
+        ));
+        let id = "case";
+        let dir = root.join("results").join(id);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("run-a.meta.json"), r#"{"tag":"fresh"}"#).unwrap();
+        std::fs::write(dir.join("run-b.meta.json"), r#"{"tag":"old"}"#).unwrap();
+
+        let stats = vec![
+            RunStats::new(
+                "run-a".into(),
+                "FULL".into(),
+                0.0,
+                0,
+                Some(1),
+                1,
+                1,
+                "".into(),
+            ),
+            RunStats::new(
+                "run-b".into(),
+                "MISS".into(),
+                0.0,
+                0,
+                Some(1),
+                1,
+                1,
+                "".into(),
+            ),
+        ];
+        let files = vec![
+            dir.join("run-a.jsonl").to_string_lossy().into_owned(),
+            dir.join("run-b.jsonl").to_string_lossy().into_owned(),
+        ];
+
+        let by_tag = filter_run_stats_for_analysis(&root, id, stats.clone(), Some("fresh"), None);
+        assert_eq!(
+            by_tag.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(),
+            vec!["run-a"]
+        );
+        let by_tag_files =
+            filter_telemetry_paths_for_analysis(&root, id, files.clone(), Some("fresh"), None);
+        assert_eq!(
+            by_tag_files
+                .iter()
+                .map(|f| telemetry::label_from_path(f))
+                .collect::<Vec<_>>(),
+            vec!["run-a"]
+        );
+
+        let by_run = filter_run_stats_for_analysis(&root, id, stats, None, Some("run-b"));
+        assert_eq!(
+            by_run.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(),
+            vec!["run-b"]
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 }

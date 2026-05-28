@@ -7,3 +7,8 @@ on the symptom, then **follow the next-step hints each tool returns**, climbing:
 definition → read its context + call graph → trace callers/callees → audit the boundary. `monogram_grep`
 is the last resort (an empty grep is not proof of absence). The bug is a call/ownership edge — don't
 stop at search.
+
+Prepared-index rule: the MCP tools are read-only and backed by a prepared monogram DB. Do not fall
+back to Bash `monogram index`, `monogram i`, `monogram reindex`, `monogram prune`,
+`monogram boot init`, or any command with `-r` / `--reindex`; if stats/tool output shows the wrong
+DB, report `HARNESS_DB_MISMATCH`.

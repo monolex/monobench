@@ -45,7 +45,9 @@ COMMANDS
       [--via direct|niia]    direct by default; niia drives the CLI through the headless terminal.
       [--effort e]           Effort label and CLI-specific effort flag where supported.
       [--prepared]           Run `prepare` first. In worktree mode, copy the prepared monogram DB
-                             snapshot into each run and skip per-run monogram indexing.
+                             snapshot into each run and skip per-run monogram indexing. Solver-side
+                             monogram index/reindex/-r is guarded and should report
+                             HARNESS_DB_MISMATCH if the DB is wrong.
       [--isolate shared|worktree]  worktree default. shared is single-lane and reuses the stable DB.
                              `--models x` is accepted as a compatibility alias, but only one value.
       [--runs N] [--jobs J]  Repeats per arm and parallel workers. Uses git-worktree isolation.
@@ -89,6 +91,7 @@ COMMANDS
   adoption <id>              Per-run tool-call + monogram-subcommand breakdown (calls/share/first-use/
                              fails/mix) — for CLI and MCP delivery. "Did the agent actually use it?"
   monogram-audit <id>        Diagnose monogram command/result failure patterns in solver telemetry
+      [--tag T] [--run RUN]  Optional filters for one experiment tag or one resolved run label.
                              and print maker recommendations for general score/proof/budget/NEXT
                              changes (not solver hints).
   meter <session.jsonl>      Summarize tokens/cache/cost for a raw model session JSONL.
@@ -167,7 +170,7 @@ FLOW  (every command ends with [NEXT]; no command dead-ends — monogram-style d
 
   compare tool vs baseline:     run <id> baseline → run <id> monogram → report <id>
   investigate a MISS:           report <id> → evidence <id> <run> --pattern ROOTCAUSE → trace <id> <run> → export <id> <run>
-  diagnose monogram loop:       monogram-audit <id> → read MAKER RECOMMENDATIONS → evidence <id> --pattern 'region_first_next|score-debug|ROOTCAUSE' → classify path-not-closed vs closed-but-uncalibrated
+  diagnose monogram loop:       monogram-audit <id> → read MAKER RECOMMENDATIONS → evidence <id> --pattern 'region_first_next|systems_lifecycle_next|ROOTCAUSE' → classify path-not-closed vs closed-but-uncalibrated
   validate before counting:     integrity <id> → inspect <id> <run> → rerun if contaminated
   scan conclusions (all runs):  evidence <id> --pattern ROOTCAUSE → evidence <id> <run>
   watch live runs:              matrix <id> … → watch --live  /  status <id> --live
