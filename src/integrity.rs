@@ -62,7 +62,7 @@ pub fn scan_run(
 
     let source = match event_path {
         Some(path) => {
-            scan_events(&mut signals, path);
+            scan_events(&mut signals, path, own_runid_from_label(label));
             path.display().to_string()
         }
         None => {
@@ -97,6 +97,51 @@ pub fn scan_run(
         signals,
         source,
     }
+}
+
+/// Like `scan_run`, but also runs the foreign-repo-marker / cross-instance-path
+/// validator on the final answer text. Use this from the CLI when the caller has
+/// already loaded the answer (e.g. `run_answer_text(...)`); the wrapper passes a
+/// `&str` straight through and recomputes score+level so the new signals affect
+/// the final risk verdict.
+pub fn scan_run_with_answer(
+    label: &str,
+    grade: &str,
+    event_path: Option<&Path>,
+    index_log: &Path,
+    answer_text: &str,
+    running_path: &Path,
+    instance_id: &str,
+) -> Finding {
+    let mut f = scan_run(
+        label,
+        grade,
+        event_path,
+        index_log,
+        !answer_text.trim().is_empty(),
+        running_path,
+    );
+    scan_answer_artifact(
+        &mut f.signals,
+        answer_text,
+        own_runid_from_label(label),
+        instance_id,
+    );
+    // Recompute score + level since new signals may have been added.
+    f.score = f
+        .signals
+        .iter()
+        .map(|s| s.points as u16)
+        .sum::<u16>()
+        .min(100) as u8;
+    f.level = level_for(f.score);
+    f.signals.sort_by(|a, b| {
+        b.points
+            .cmp(&a.points)
+            .then_with(|| a.kind.cmp(b.kind))
+            .then_with(|| a.evidence.cmp(&b.evidence))
+    });
+    f
 }
 
 pub fn print_report(id: &str, findings: &[Finding], detail: bool) {
@@ -170,18 +215,18 @@ pub fn print_report(id: &str, findings: &[Finding], detail: bool) {
     println!("  CLEAN/WATCH: no obvious contamination signal was found; this is not a proof of validity.");
 }
 
-fn scan_events(signals: &mut Vec<Signal>, path: &Path) {
+fn scan_events(signals: &mut Vec<Signal>, path: &Path, own_runid: &str) {
     for ev in telemetry::events_from_path(&path.to_string_lossy()) {
         let cmd = ev.cmd.trim();
         if cmd.is_empty() {
             continue;
         }
-        scan_command(signals, cmd, ev.denied);
+        scan_command(signals, cmd, ev.denied, own_runid);
         scan_result(signals, &ev.result, cmd);
     }
 }
 
-fn scan_command(signals: &mut Vec<Signal>, cmd: &str, denied: bool) {
+fn scan_command(signals: &mut Vec<Signal>, cmd: &str, denied: bool, own_runid: &str) {
     let low = cmd.to_lowercase();
     let state_target = touches_monogram_state(&low);
     if cmd_has_word(cmd, "git") && !denied && !low.contains("monobench: git is disabled") {
@@ -218,6 +263,9 @@ fn scan_command(signals: &mut Vec<Signal>, cmd: &str, denied: bool) {
     }
     if cmd_has_word(cmd, "monogram") {
         match monogram_sub(cmd).as_deref() {
+            Some("index") | Some("reindex") if denied => {
+                add(signals, "watch", 15, "solver_prepared_reindex_blocked", cmd)
+            }
             Some("index") | Some("reindex") => {
                 add(signals, "high", 35, "solver_reindexed_monogram", cmd)
             }
@@ -229,9 +277,41 @@ fn scan_command(signals: &mut Vec<Signal>, cmd: &str, denied: bool) {
             }
             _ => {}
         }
+        if denied && monogram_reindex_flag(cmd) {
+            add(signals, "watch", 15, "solver_prepared_reindex_blocked", cmd);
+        } else if monogram_reindex_flag(cmd) {
+            add(signals, "high", 35, "solver_reindexed_monogram", cmd);
+        }
     }
     if (cmd_has_word(cmd, "pgrep") || cmd_has_word(cmd, "ps")) && targets_tool_process(&low) {
         add(signals, "watch", 10, "solver_process_probe", cmd);
+    }
+
+    // -- foreign worktree access --
+    // Detects the "agent broadly searched /private/tmp and stumbled into another instance's
+    // worktree" contamination mechanism. The agent's own worktree path always contains
+    // own_runid (true in BOTH layouts: OLD `wt/<runid>-<pid>/...` and NEW
+    // `wt/<instance>/<runid>-<pid>/...`), so any wt/-rooted path that lacks own_runid is
+    // by definition a sibling run we should never have read.
+    if !own_runid.is_empty() {
+        'outer: for marker in ["/private/tmp/monobench-work/wt/", "/tmp/monobench-work/wt/"] {
+            let mut rest = cmd;
+            while let Some(idx) = rest.find(marker) {
+                let after = &rest[idx + marker.len()..];
+                let path_end = after
+                    .find(|c: char| {
+                        c.is_whitespace()
+                            || matches!(c, '"' | '\'' | ';' | '&' | '|' | '<' | '>' | ')')
+                    })
+                    .unwrap_or(after.len());
+                let path_seg = &after[..path_end];
+                if !path_seg.is_empty() && !path_seg.contains(own_runid) {
+                    add(signals, "critical", 65, "sibling_worktree_access", cmd);
+                    break 'outer;
+                }
+                rest = &after[path_end..];
+            }
+        }
     }
 }
 
@@ -344,6 +424,85 @@ fn scan_index_log(signals: &mut Vec<Signal>, label: &str, path: &Path) {
     }
 }
 
+/// Scan the run's final answer text for foreign-repo signals.
+///
+/// Two checks:
+///   1. ROOTCAUSE answer line references a `/tmp/monobench-work/wt/...` path that
+///      does NOT contain our own run-id → `cross_instance_answer_path` (+70).
+///   2. ROOTCAUSE answer file-path contains a curated foreign-repo marker
+///      (from `FOREIGN_REPO_MARKERS`) → `foreign_repo_marker_in_answer` (+60).
+///
+/// Catches the wrong-base-clone contamination mechanism that cmd-scan misses
+/// (the agent legitimately searches its own worktree but the worktree itself
+/// is bound to the wrong repo).
+fn scan_answer_artifact(
+    signals: &mut Vec<Signal>,
+    answer_text: &str,
+    own_runid: &str,
+    instance_id: &str,
+) {
+    if answer_text.trim().is_empty() {
+        return;
+    }
+    let own_prefix = problem_prefix(instance_id);
+
+    let answer_line = answer_text
+        .lines()
+        .find(|l| l.to_lowercase().contains("rootcause:"))
+        .unwrap_or("");
+    if answer_line.is_empty() {
+        return;
+    }
+    let answer_clean = crate::grade::strip_worktree_prefix(answer_line);
+
+    // Check 1: raw answer line references a wt/<seg> path not containing our run-id.
+    if !own_runid.is_empty() {
+        'outer: for marker in ["/private/tmp/monobench-work/wt/", "/tmp/monobench-work/wt/"] {
+            if let Some(idx) = answer_line.find(marker) {
+                let after = &answer_line[idx + marker.len()..];
+                let path_end = after
+                    .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\''))
+                    .unwrap_or(after.len());
+                let path_seg = &after[..path_end];
+                if !path_seg.is_empty() && !path_seg.contains(own_runid) {
+                    add(
+                        signals,
+                        "critical",
+                        70,
+                        "cross_instance_answer_path",
+                        answer_line.trim(),
+                    );
+                    break 'outer;
+                }
+            }
+        }
+    }
+
+    // Check 2: cleaned answer path contains a marker that belongs to a DIFFERENT problem.
+    for (prefix, markers) in FOREIGN_REPO_MARKERS {
+        if *prefix == own_prefix {
+            continue;
+        }
+        for mk in *markers {
+            if answer_clean.contains(mk) {
+                add(
+                    signals,
+                    "critical",
+                    60,
+                    "foreign_repo_marker_in_answer",
+                    format!(
+                        "marker='{}' belongs to {}*: {}",
+                        mk,
+                        prefix,
+                        answer_clean.trim()
+                    ),
+                );
+                return;
+            }
+        }
+    }
+}
+
 fn add(
     signals: &mut Vec<Signal>,
     severity: &'static str,
@@ -375,6 +534,56 @@ fn level_for(score: u8) -> &'static str {
     }
 }
 
+/// Extract the run-id from the label that `scan_run` receives.
+/// Currently `label` IS the run-id (e.g. "baseline-claude-haiku-r1-t1779934411735").
+/// Kept as a fn so a future label-vs-runid split has one place to update.
+fn own_runid_from_label(label: &str) -> &str {
+    label
+}
+
+/// Extract the problem prefix from an instance id, e.g.
+/// "netty-12036-unsafe-bytebuffer-uaf" -> "netty".
+fn problem_prefix(instance_id: &str) -> &str {
+    instance_id.split('-').next().unwrap_or(instance_id)
+}
+
+/// Foreign-repo markers: substrings that, if present in an *answer file path*,
+/// unambiguously identify the answer as belonging to a different problem's repo.
+///
+/// Used by `scan_answer_artifact` to catch the "wrong base clone bound to this
+/// run" contamination mechanism that pure cmd-scan cannot see (e.g. a `node`
+/// instance whose own worktree was bound to deno-base and answered with
+/// `ext/node/ops/sqlite/database.rs`).
+///
+/// Add a marker only when it would NEVER plausibly appear in another problem's
+/// codebase — that avoids false positives on generic words like "src" or "lib".
+const FOREIGN_REPO_MARKERS: &[(&str, &[&str])] = &[
+    ("bun",        &["src/bun.js/", "BunString", "src/napi/napi.zig"]),
+    ("cpython",    &["Modules/_json.c", "Modules/_grouper", "_PyRawMutex"]),
+    ("dart",       &["dart-lang/sdk", "sdk/runtime/", "sdk/lib/core/uri.dart"]),
+    ("deno",       &["ext/node/ops/sqlite", "ext/node/ops/zlib", "deno_node"]),
+    ("dotnet",     &["System.Management/", "InteropClasses/WMIInterop", "GCHandle.cs"]),
+    ("envoy",      &["envoy/source/extensions", "FileStreamer"]),
+    ("flutter",    &["flutter/engine", "flow/SurfaceTexture"]),
+    ("ghostty",    &["apprt/gtk", "apprt/gtk-ng/class/split_tree.zig"]),
+    ("grpc",       &["src/core/ext/filters/rls", "lb_policy/rls"]),
+    ("ksmbd",      &["smb2pdu.c", "mgmt/user_session"]),
+    ("ktor",       &["ktor-io/", "readChannel"]),
+    ("kubernetes", &["staging/src/k8s.io", "pkg/api/v1/pod"]),
+    ("neovim",     &["src/nvim/", "neovim/runtime"]),
+    ("netty",      &["io/netty/", "PlatformDependent.java", "UnsafeBuffer.java"]),
+    ("node",       &["deps/llhttp/", "src/node_zlib", "src/node_sqlite"]),
+    ("numpy",      &["numpy/_core", "nditer_constr"]),
+    ("openresty",  &["lualib/ngx/pipe", "lua-resty"]),
+    ("php",        &["php-src/", "Zend/zend.h", "ext/lexbor/", "ext/com_dotnet/", "Zend/Optimizer"]),
+    ("pytorch",    &["aten/src/ATen", "torch/csrc/jit/tensorexpr"]),
+    ("redis",      &["src/streamCommand.c", "src/restoreCommand"]),
+    ("ruby",       &["io_buffer.c", "yjit/src/"]),
+    ("spark",      &["org/apache/spark/", "core/src/main/scala/"]),
+    ("swift",      &["lib/Demangling/Demangler.cpp", "apple/swift"]),
+    ("vapor",      &["Sources/Vapor/", "FileMiddleware.swift"]),
+];
+
 fn touches_monogram_state(low: &str) -> bool {
     low.contains(".monolex/monogram")
         || low.contains("/monogram/")
@@ -400,6 +609,15 @@ fn monogram_sub(cmd: &str) -> Option<String> {
     })
 }
 
+fn monogram_reindex_flag(cmd: &str) -> bool {
+    let Some(idx) = crate::util::cmd_word_pos(cmd, "monogram") else {
+        return false;
+    };
+    cmd[idx + 8..]
+        .split_whitespace()
+        .any(|tok| matches!(tok.trim_matches(['"', '\'']), "-r" | "--reindex"))
+}
+
 fn first_line(s: &str) -> String {
     s.lines()
         .map(str::trim)
@@ -418,7 +636,7 @@ fn number_after(line: &str, needle: &str) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{scan_command, scan_index_log, scan_run, Signal};
+    use super::{scan_answer_artifact, scan_command, scan_index_log, scan_run, Signal};
     use std::path::{Path, PathBuf};
 
     #[test]
@@ -428,6 +646,7 @@ mod tests {
             &mut signals,
             "sqlite3 ~/.monolex/monogram/foo.db 'select count(*) from files'",
             false,
+            "",
         );
         assert!(signals
             .iter()
@@ -441,6 +660,7 @@ mod tests {
             &mut signals,
             "monogram search \"kill runtime style\"",
             false,
+            "",
         );
         // A quoted "kill" inside a search query is not a process kill of any severity.
         assert!(!signals
@@ -453,7 +673,7 @@ mod tests {
         // ps|grep monogram → kill <pid> names no tool, so it evades the tool-named check but must
         // still surface as a lower-severity watch signal.
         let mut signals: Vec<Signal> = vec![];
-        scan_command(&mut signals, "kill 82606 84467", false);
+        scan_command(&mut signals, "kill 82606 84467", false, "");
         let s = signals
             .iter()
             .find(|s| s.kind == "solver_killed_process")
@@ -465,9 +685,21 @@ mod tests {
 
         // A kill that names a tool process stays the high-severity signal.
         let mut named: Vec<Signal> = vec![];
-        scan_command(&mut named, "pkill -f 'monogram index'", false);
+        scan_command(&mut named, "pkill -f 'monogram index'", false, "");
         assert!(named.iter().any(|s| s.kind == "solver_killed_tool_process"));
         assert!(!named.iter().any(|s| s.kind == "solver_killed_process"));
+    }
+
+    #[test]
+    fn blocked_prepared_reindex_is_not_scored_as_mutation() {
+        let mut signals: Vec<Signal> = vec![];
+        scan_command(&mut signals, "monogram index . -r", true, "");
+        assert!(signals
+            .iter()
+            .any(|s| s.kind == "solver_prepared_reindex_blocked"));
+        assert!(!signals
+            .iter()
+            .any(|s| s.kind == "solver_reindexed_monogram"));
     }
 
     #[test]
@@ -506,5 +738,126 @@ mod tests {
             .signals
             .iter()
             .any(|s| s.kind == "telemetry_without_answer"));
+    }
+
+    // ----- Cross-instance contamination detectors (added 2026-05-28) -----
+    //
+    // Pinned against the three real contaminations the audit found:
+    //   dotnet-124796/baseline-claude-haiku-r1-t1779934411735  (answered php content)
+    //   node-56840/baseline-claude-haiku-r1-t1779688284216     (answered deno content)
+    //   node-62325/baseline-claude-haiku-r1-t1779951615391     (answered netty content)
+
+    #[test]
+    fn sibling_worktree_cmd_is_critical() {
+        let mut signals: Vec<Signal> = vec![];
+        let cmd = "ls -la /private/tmp/monobench-work/wt/baseline-claude-haiku-r2-t1779934441176-96254/ext/com_dotnet/";
+        scan_command(&mut signals, cmd, false, "baseline-claude-haiku-r1-t1779934411735");
+        let s = signals
+            .iter()
+            .find(|s| s.kind == "sibling_worktree_access")
+            .expect("sibling worktree access must be flagged");
+        assert!(s.points >= 60, "must reach CONTAMINATED threshold, got {}", s.points);
+    }
+
+    #[test]
+    fn own_worktree_cmd_does_not_flag_sibling() {
+        let mut signals: Vec<Signal> = vec![];
+        // OLD layout: wt/<runid>-<pid>/...
+        let cmd_old = "find /private/tmp/monobench-work/wt/baseline-claude-haiku-r1-t1779934411735-96254 -type f";
+        scan_command(&mut signals, cmd_old, false, "baseline-claude-haiku-r1-t1779934411735");
+        assert!(!signals.iter().any(|s| s.kind == "sibling_worktree_access"),
+                "own-runid worktree must NOT trigger sibling_worktree_access (OLD layout), got: {:?}", signals);
+
+        let mut signals2: Vec<Signal> = vec![];
+        // NEW layout: wt/<instance>/<runid>-<pid>/... — own_runid still appears in the path.
+        let cmd_new = "ls /private/tmp/monobench-work/wt/netty-12036-unsafe-bytebuffer-uaf/baseline-claude-haiku-r1-t1779934411735-96254/io/netty/";
+        scan_command(&mut signals2, cmd_new, false, "baseline-claude-haiku-r1-t1779934411735");
+        assert!(!signals2.iter().any(|s| s.kind == "sibling_worktree_access"),
+                "own-runid worktree must NOT trigger sibling_worktree_access (NEW layout), got: {:?}", signals2);
+    }
+
+    #[test]
+    fn empty_own_runid_disables_sibling_check() {
+        // When tests or legacy callers pass own_runid="" the detector must NOT fire
+        // (avoids false positives in callers that lack the run-id context).
+        let mut signals: Vec<Signal> = vec![];
+        let cmd = "ls /private/tmp/monobench-work/wt/baseline-claude-haiku-r2-t1779934441176-96254/";
+        scan_command(&mut signals, cmd, false, "");
+        assert!(!signals.iter().any(|s| s.kind == "sibling_worktree_access"));
+    }
+
+    #[test]
+    fn answer_with_php_marker_in_dotnet_instance_is_contaminated() {
+        let mut signals: Vec<Signal> = vec![];
+        let answer = "Root cause analysis:\nROOTCAUSE: ext/com_dotnet/com_handlers.c::php_com_object_clone\nFIX: keep arg alive.";
+        scan_answer_artifact(
+            &mut signals,
+            answer,
+            "baseline-claude-haiku-r1-t1779934411735",
+            "dotnet-124796-wmiinterop-keepalive",
+        );
+        let s = signals.iter()
+            .find(|s| s.kind == "foreign_repo_marker_in_answer")
+            .expect("dotnet instance answering with php marker must be flagged");
+        assert!(s.points >= 60);
+    }
+
+    #[test]
+    fn answer_with_deno_marker_in_node_instance_is_contaminated() {
+        let mut signals: Vec<Signal> = vec![];
+        let answer = "ROOTCAUSE: ext/node/ops/sqlite/database.rs::prepare\nFIX: tag arc.";
+        scan_answer_artifact(
+            &mut signals,
+            answer,
+            "baseline-claude-haiku-r1-t1779688284216",
+            "node-56840-statementsync-gc",
+        );
+        assert!(signals.iter().any(|s| s.kind == "foreign_repo_marker_in_answer"),
+                "node instance answering with deno marker must be flagged, got: {:?}", signals);
+    }
+
+    #[test]
+    fn answer_with_netty_marker_in_node_instance_is_contaminated() {
+        let mut signals: Vec<Signal> = vec![];
+        let answer = "ROOTCAUSE: codec/src/main/java/io/netty/handler/codec/compression/Compressor.java::reset\nFIX: …";
+        scan_answer_artifact(
+            &mut signals,
+            answer,
+            "baseline-claude-haiku-r1-t1779951615391",
+            "node-62325-zlib-reset-write",
+        );
+        assert!(signals.iter().any(|s| s.kind == "foreign_repo_marker_in_answer"),
+                "node instance answering with netty marker must be flagged, got: {:?}", signals);
+    }
+
+    #[test]
+    fn own_repo_answer_is_clean() {
+        let mut signals: Vec<Signal> = vec![];
+        // netty instance answering with a netty path — must NOT trigger any foreign signal.
+        let answer = "ROOTCAUSE: common/src/main/java/io/netty/util/internal/PlatformDependent.java::directBuffer\nFIX: attach UnsafeMemory.";
+        scan_answer_artifact(
+            &mut signals,
+            answer,
+            "baseline-claude-haiku-r1-t1779934411735",
+            "netty-12036-unsafe-bytebuffer-uaf",
+        );
+        assert!(!signals.iter().any(|s| s.kind.starts_with("foreign_") || s.kind == "cross_instance_answer_path"),
+                "own-repo answer must NOT be flagged, got: {:?}", signals);
+    }
+
+    #[test]
+    fn cross_instance_wt_path_in_answer_is_contaminated() {
+        let mut signals: Vec<Signal> = vec![];
+        let answer = "ROOTCAUSE: /private/tmp/monobench-work/wt/baseline-claude-haiku-r2-t1779934441176-96254/Zend/zend.h::zend_compile\nFIX: …";
+        scan_answer_artifact(
+            &mut signals,
+            answer,
+            "baseline-claude-haiku-r1-t1779934411735",
+            "dotnet-124796-wmiinterop-keepalive",
+        );
+        let s = signals.iter()
+            .find(|s| s.kind == "cross_instance_answer_path")
+            .expect("answer naming another run's wt path must be flagged");
+        assert!(s.points >= 60);
     }
 }
