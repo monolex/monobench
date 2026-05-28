@@ -100,6 +100,29 @@ fn unique_runid(out: &Path, label: &str, run_no: usize) -> String {
     format!("{label}-r{run_no}-t{}", unix_ms() + 1000)
 }
 
+fn path_component(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    if out.is_empty() {
+        "instance".into()
+    } else {
+        out
+    }
+}
+
+fn worktree_run_dir(work: &str, id: &str, runid: &str) -> PathBuf {
+    Path::new(work)
+        .join("wt")
+        .join(path_component(id))
+        .join(format!("{runid}-{}", std::process::id()))
+}
+
 fn runid_timestamp(runid: &str) -> u128 {
     runid
         .rsplit("-t")
@@ -449,17 +472,68 @@ fn tool_uses_monogram_index(tool_json: &Value) -> bool {
         .unwrap_or(false)
 }
 
+fn tool_version_from_json(tool_json: &Value) -> String {
+    let vb = tool_json
+        .get("version_bin")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if vb.is_empty() {
+        String::new()
+    } else {
+        crate::util::capture_semver(vb)
+    }
+}
+
 fn prepared_snapshot_dir(out: &Path, tool: &str) -> PathBuf {
     out.join("_prepared").join(tool)
+}
+
+fn prepared_manifest_value(snap_dir: &Path, key: &str) -> Option<String> {
+    let prefix = format!("{key}\t");
+    std::fs::read_to_string(snap_dir.join("manifest.tsv"))
+        .ok()?
+        .lines()
+        .find_map(|line| line.strip_prefix(&prefix).map(str::to_string))
+}
+
+fn prepared_snapshot_version_matches(snap_dir: &Path, expected_tool_version: &str) -> bool {
+    if expected_tool_version.is_empty() {
+        return true;
+    }
+    prepared_manifest_value(snap_dir, "tool_version").as_deref() == Some(expected_tool_version)
 }
 
 fn save_prepared_monogram_snapshot(
     out: &Path,
     tool: &str,
     repo: &Path,
+    tool_version: &str,
     log_path: &Path,
 ) -> Result<(), String> {
     let src_db = monogram_project_db_path(repo);
+
+    // Checkpoint the WAL into the main DB so the snapshot is a single self-
+    // contained file. Without this, `-wal` is copied as a sidecar; readers
+    // would think pending state exists and refuse multi-reader sharing on
+    // the symlink fast path (Change 6). Silently OK if sqlite3 missing.
+    let _ = Command::new("sqlite3")
+        .arg(&src_db)
+        .arg("PRAGMA wal_checkpoint(TRUNCATE);")
+        .output();
+
+    // Detect whether the indexer wrote root-relative paths (lib-monogram
+    // schema v11+). A single non-null row tells us; rows beginning with
+    // `/` indicate the legacy absolute scheme, which still works through
+    // the install-side copy+rewrite fallback (Change 6).
+    let portable = sqlite3_query_lines(
+        &src_db,
+        "SELECT resolved_path FROM relations WHERE resolved_path IS NOT NULL LIMIT 1;",
+    )
+    .ok()
+    .and_then(|rows| rows.into_iter().next())
+    .map(|v| !v.starts_with('/'))
+    .unwrap_or(false);
+
     let snap_dir = prepared_snapshot_dir(out, tool);
     std::fs::remove_dir_all(&snap_dir).ok();
     std::fs::create_dir_all(&snap_dir).map_err(|e| format!("{}: {e}", snap_dir.display()))?;
@@ -471,29 +545,35 @@ fn save_prepared_monogram_snapshot(
         .to_string_lossy()
         .to_string();
     let manifest = format!(
-        "source_root\t{}\nsource_db\t{}\nsnapshot_db\t{}\ncreated_ms\t{}\n",
+        "source_root\t{}\nsource_db\t{}\nsnapshot_db\t{}\ntool_version\t{}\ncreated_ms\t{}\nportable\t{}\n",
         source_root,
         src_db.display(),
         snap_db.display(),
-        unix_ms()
+        tool_version,
+        unix_ms(),
+        portable
     );
     std::fs::write(snap_dir.join("manifest.tsv"), manifest)
         .map_err(|e| format!("write prepared manifest: {e}"))?;
     append_log(
         log_path,
         &format!(
-            "[prepared] saved monogram snapshot {} -> {}\n",
+            "[prepared] saved monogram snapshot {} -> {} (portable={})\n",
             src_db.display(),
-            snap_db.display()
+            snap_db.display(),
+            portable
         ),
     );
     Ok(())
 }
 
-fn prepared_monogram_snapshot_ready(out: &Path, tool: &str) -> bool {
+fn prepared_monogram_snapshot_ready(out: &Path, tool: &str, expected_tool_version: &str) -> bool {
     let snap_dir = prepared_snapshot_dir(out, tool);
     let db = snap_dir.join("monogram.db");
     if !db.is_file() || !snap_dir.join("manifest.tsv").is_file() {
+        return false;
+    }
+    if !prepared_snapshot_version_matches(&snap_dir, expected_tool_version) {
         return false;
     }
     // verify the snapshot is NON-EMPTY. A snapshot prepared before the shared clone finished
@@ -565,6 +645,63 @@ fn install_prepared_monogram_snapshot(
     let snap_dir = prepared_snapshot_dir(out, tool);
     let snap_db = snap_dir.join("monogram.db");
     let dst_db = monogram_project_db_path(repo);
+
+    // Fast path: portable templates (lib-monogram schema v11+) store all
+    // paths as repo-root-relative `./...`, so every worktree with the same
+    // file layout reads the same rows. Symlink — zero copy, zero rewrite.
+    let portable = prepared_manifest_value(&snap_dir, "portable").as_deref() == Some("true");
+    if portable {
+        marker.set(
+            "index",
+            &format!("prepared-link log={}", log_path.display()),
+        );
+        if let Some(parent) = dst_db.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("{}: {e}", parent.display()))?;
+        }
+        // The worktree is fresh; remove any pre-existing destination
+        // (including its WAL/SHM sidecars) before linking.
+        for sidecar in sqlite_sidecars(&dst_db) {
+            std::fs::remove_file(sidecar).ok();
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&snap_db, &dst_db).map_err(|e| {
+                format!(
+                    "symlink {} -> {}: {e}",
+                    snap_db.display(),
+                    dst_db.display()
+                )
+            })?;
+        }
+        #[cfg(not(unix))]
+        {
+            // Fall back to copy on non-Unix platforms — symlinking on
+            // Windows needs SeCreateSymbolicLinkPrivilege which monobench
+            // can't assume. The portable DB still avoids the path-rewrite
+            // step, so we save the SQL UPDATEs even when we copy.
+            copy_sqlite_snapshot(&snap_db, &dst_db)?;
+        }
+        register_monogram_project(repo, &dst_db);
+        append_log(
+            log_path,
+            &format!(
+                "[prepared] linked portable monogram snapshot {} -> {}\n",
+                snap_db.display(),
+                dst_db.display()
+            ),
+        );
+        append_log(
+            log_path,
+            "[prepared] monogram snapshot ready (portable; no copy, no path rewrite)\n",
+        );
+        return Ok(std::fs::read_to_string(log_path).unwrap_or_default());
+    }
+
+    // Legacy path: absolute-path DBs (schema v10 and earlier) still need a
+    // private copy + SQL rewrite so the canonical paths inside the DB
+    // match this run's worktree. Kept so older prepared snapshots keep
+    // working until refreshed.
     marker.set(
         "index",
         &format!("prepared-copy log={}", log_path.display()),
@@ -572,7 +709,7 @@ fn install_prepared_monogram_snapshot(
     append_log(
         log_path,
         &format!(
-            "[prepared] installing monogram snapshot {} -> {}\n",
+            "[prepared] installing legacy monogram snapshot {} -> {}\n",
             snap_db.display(),
             dst_db.display()
         ),
@@ -642,13 +779,17 @@ pub fn prepare(root: &Path, id: &str, tools: &[String], wtlock: &Mutex<()>) -> i
             log_path.display()
         );
         let uses_monogram_index = tool_uses_monogram_index(&tj);
+        let tool_version = tool_version_from_json(&tj);
         if uses_monogram_index
-            && prepared_monogram_snapshot_ready(&out, tool)
+            && prepared_monogram_snapshot_ready(&out, tool, &tool_version)
             && !refresh_prepared_requested()
         {
             append_log(
                 &log_path,
-                "[prepared] reused existing monogram snapshot; set MONOBENCH_REFRESH_PREPARED=1 to rebuild\n",
+                &format!(
+                    "[prepared] reused existing monogram snapshot version={}; set MONOBENCH_REFRESH_PREPARED=1 to rebuild\n",
+                    if tool_version.is_empty() { "-" } else { &tool_version }
+                ),
             );
             println!("  prepared {tool} (reused)");
             continue;
@@ -665,7 +806,9 @@ pub fn prepare(root: &Path, id: &str, tools: &[String], wtlock: &Mutex<()>) -> i
             return 1;
         }
         if uses_monogram_index {
-            if let Err(e) = save_prepared_monogram_snapshot(&out, tool, &clone, &log_path) {
+            if let Err(e) =
+                save_prepared_monogram_snapshot(&out, tool, &clone, &tool_version, &log_path)
+            {
                 eprintln!("prepare snapshot failed for '{tool}': {e}");
                 return 1;
             }
@@ -741,14 +884,7 @@ pub fn run(
     // Capture the tool's version (e.g. monogram semver) so runs from different builds form DISTINCT
     // arms instead of silently averaging together. `version_bin` is declared per tool.json; baseline
     // omits it → no version segment, identical to legacy labels. Empty when not OpenCLIs-installed.
-    let tool_version = {
-        let vb = field("version_bin");
-        if vb.is_empty() {
-            String::new()
-        } else {
-            crate::util::capture_semver(&vb)
-        }
-    };
+    let tool_version = tool_version_from_json(&tj);
     let label = full_arm_name(arm, &tool_version, &cli, model, &effort);
     let runid = unique_runid(&out, &label, run_no);
 
@@ -863,9 +999,11 @@ pub fn run(
                 .output()
                 .ok();
         }
-        let wt = PathBuf::from(format!("{work}/wt/{runid}-{}", std::process::id()));
+        let wt = worktree_run_dir(&work, id, &runid);
         std::fs::remove_dir_all(&wt).ok();
-        std::fs::create_dir_all(format!("{work}/wt")).ok();
+        if let Some(parent) = wt.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
         {
             let _g = wtlock.lock().unwrap();
             Command::new("git")
@@ -1960,6 +2098,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn worktree_path_includes_instance_id() {
+        let runid = "monogram-0.61.31-claude-haiku-r1-t123";
+        let a = worktree_run_dir(
+            "/tmp/monobench-work",
+            "redis-14929-restorecmd-meta-uaf",
+            runid,
+        );
+        let b = worktree_run_dir("/tmp/monobench-work", "ktor-5626-readchannel-close", runid);
+
+        assert_ne!(a, b);
+        assert!(a
+            .to_string_lossy()
+            .contains("redis-14929-restorecmd-meta-uaf"));
+        assert!(b.to_string_lossy().contains("ktor-5626-readchannel-close"));
+    }
+
+    #[test]
     fn substitutes_repo_and_codegraph() {
         let repo = Path::new("/tmp/repo");
         assert_eq!(
@@ -2055,6 +2210,81 @@ mod tests {
                 .to_string()
         ));
         assert!(text.contains("./relative.rs"));
+        let _ = std::fs::remove_dir_all(tmp);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn install_prepared_portable_uses_symlink() {
+        // Build a fake _prepared/monogram/ template marked portable=true with a
+        // minimal sqlite-shaped file (the install path doesn't read it). Then
+        // call install and assert the destination is a symlink, not a copy.
+        let tmp = std::env::temp_dir().join(format!(
+            "monobench-portable-link-{}-{}",
+            std::process::id(),
+            unix_ms()
+        ));
+        let out = tmp.join("results").join("inst-x");
+        let repo = tmp.join("worktree");
+        std::fs::create_dir_all(&repo).unwrap();
+        let snap_dir = prepared_snapshot_dir(&out, "monogram");
+        std::fs::create_dir_all(&snap_dir).unwrap();
+        let snap_db = snap_dir.join("monogram.db");
+        std::fs::write(&snap_db, b"SQLite-snapshot-stub").unwrap();
+        std::fs::write(
+            snap_dir.join("manifest.tsv"),
+            "source_root\t/tmp/source\nsource_db\t/tmp/source.db\nsnapshot_db\t/tmp/snap.db\ntool_version\t0.62.0\ncreated_ms\t1\nportable\ttrue\n",
+        )
+        .unwrap();
+        let log_path = tmp.join("install.log");
+        let marker_path = tmp.join("running.marker");
+        std::fs::write(&marker_path, "").unwrap();
+        let marker = RunningMarker { path: marker_path };
+        let dst_db = monogram_project_db_path(&repo);
+        // Cleanup any prior link/file at dst_db so this test is self-contained.
+        for sidecar in sqlite_sidecars(&dst_db) {
+            std::fs::remove_file(sidecar).ok();
+        }
+        install_prepared_monogram_snapshot(&out, "monogram", &repo, &log_path, &marker).unwrap();
+        let meta = std::fs::symlink_metadata(&dst_db).unwrap();
+        assert!(
+            meta.file_type().is_symlink(),
+            "dst_db must be a symlink, got {:?}",
+            meta.file_type()
+        );
+        let target = std::fs::read_link(&dst_db).unwrap();
+        assert_eq!(target, snap_db, "symlink target mismatch");
+        // Confirm the log narrates the portable path, not the legacy one.
+        let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+        assert!(log.contains("portable"), "log missing portable marker: {log}");
+        assert!(
+            !log.contains("rewriting monogram DB paths"),
+            "portable install must NOT rewrite paths: {log}"
+        );
+        // Cleanup: remove the dst symlink + sidecars + tmp.
+        for sidecar in sqlite_sidecars(&dst_db) {
+            std::fs::remove_file(sidecar).ok();
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn prepared_snapshot_requires_matching_tool_version() {
+        let tmp = std::env::temp_dir().join(format!(
+            "monobench-prepared-version-test-{}-{}",
+            std::process::id(),
+            unix_ms()
+        ));
+        let snap = tmp.join("_prepared").join("monogram");
+        std::fs::create_dir_all(&snap).unwrap();
+        std::fs::write(
+            snap.join("manifest.tsv"),
+            "source_root\t/tmp/repo\nsource_db\t/tmp/a.db\nsnapshot_db\t/tmp/b.db\ntool_version\t0.61.22\ncreated_ms\t1\n",
+        )
+        .unwrap();
+        assert!(prepared_snapshot_version_matches(&snap, "0.61.22"));
+        assert!(!prepared_snapshot_version_matches(&snap, "0.61.23"));
+        assert!(prepared_snapshot_version_matches(&snap, ""));
         let _ = std::fs::remove_dir_all(tmp);
     }
 
