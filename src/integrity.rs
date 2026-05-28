@@ -29,6 +29,7 @@ pub fn scan_run(
     index_log: &Path,
     has_answer: bool,
     running_path: &Path,
+    instance_id: &str,
 ) -> Finding {
     let mut signals = vec![];
 
@@ -62,7 +63,7 @@ pub fn scan_run(
 
     let source = match event_path {
         Some(path) => {
-            scan_events(&mut signals, path, own_runid_from_label(label));
+            scan_events(&mut signals, path, own_runid_from_label(label), instance_id);
             path.display().to_string()
         }
         None => {
@@ -120,6 +121,7 @@ pub fn scan_run_with_answer(
         index_log,
         !answer_text.trim().is_empty(),
         running_path,
+        instance_id,
     );
     scan_answer_artifact(
         &mut f.signals,
@@ -215,18 +217,29 @@ pub fn print_report(id: &str, findings: &[Finding], detail: bool) {
     println!("  CLEAN/WATCH: no obvious contamination signal was found; this is not a proof of validity.");
 }
 
-fn scan_events(signals: &mut Vec<Signal>, path: &Path, own_runid: &str) {
+fn scan_events(
+    signals: &mut Vec<Signal>,
+    path: &Path,
+    own_runid: &str,
+    own_instance_id: &str,
+) {
     for ev in telemetry::events_from_path(&path.to_string_lossy()) {
         let cmd = ev.cmd.trim();
         if cmd.is_empty() {
             continue;
         }
-        scan_command(signals, cmd, ev.denied, own_runid);
+        scan_command(signals, cmd, ev.denied, own_runid, own_instance_id);
         scan_result(signals, &ev.result, cmd);
     }
 }
 
-fn scan_command(signals: &mut Vec<Signal>, cmd: &str, denied: bool, own_runid: &str) {
+fn scan_command(
+    signals: &mut Vec<Signal>,
+    cmd: &str,
+    denied: bool,
+    own_runid: &str,
+    own_instance_id: &str,
+) {
     let low = cmd.to_lowercase();
     let state_target = touches_monogram_state(&low);
     if cmd_has_word(cmd, "git") && !denied && !low.contains("monobench: git is disabled") {
@@ -294,11 +307,20 @@ fn scan_command(signals: &mut Vec<Signal>, cmd: &str, denied: bool, own_runid: &
 
     // -- foreign worktree access --
     // Detects the "agent broadly searched /private/tmp and stumbled into another instance's
-    // worktree" contamination mechanism. The agent's own worktree path always contains
-    // own_runid (true in BOTH layouts: OLD `wt/<runid>-<pid>/...` and NEW
-    // `wt/<instance>/<runid>-<pid>/...`), so any wt/-rooted path that lacks own_runid is
-    // by definition a sibling run we should never have read.
-    if !own_runid.is_empty() {
+    // worktree" contamination mechanism.
+    //
+    // Layouts handled:
+    //   OLD: wt/<runid>-<pid>/...           → first segment after wt/ contains own_runid
+    //   NEW: wt/<instance>/<runid>-<pid>/...→ first segment after wt/ equals own_instance_id
+    //                                          (the agent may also probe just wt/<instance>/
+    //                                          for ls/find — its own instance subdir, parent
+    //                                          of its assigned worktree; that's denied by the
+    //                                          kernel sandbox but the path itself is NOT a
+    //                                          sibling-access signal)
+    //
+    // Any wt/-rooted path whose first segment is neither own_instance_id NOR contains
+    // own_runid is by definition a sibling run we should never have read.
+    if !own_runid.is_empty() || !own_instance_id.is_empty() {
         'outer: for marker in ["/private/tmp/monobench-work/wt/", "/tmp/monobench-work/wt/"] {
             let mut rest = cmd;
             while let Some(idx) = rest.find(marker) {
@@ -309,8 +331,19 @@ fn scan_command(signals: &mut Vec<Signal>, cmd: &str, denied: bool, own_runid: &
                             || matches!(c, '"' | '\'' | ';' | '&' | '|' | '<' | '>' | ')')
                     })
                     .unwrap_or(after.len());
-                let path_seg = &after[..path_end];
-                if !path_seg.is_empty() && !path_seg.contains(own_runid) {
+                let full_path = &after[..path_end];
+                // First slash-delimited segment after wt/ — instance id in NEW layout, run-id
+                // in OLD layout. Strip a trailing slash so `php-19591-…/` compares equal to
+                // `php-19591-…`.
+                let first_seg = full_path
+                    .split('/')
+                    .next()
+                    .unwrap_or("")
+                    .trim_end_matches('/');
+                let is_own_runid = !own_runid.is_empty() && full_path.contains(own_runid);
+                let is_own_instance =
+                    !own_instance_id.is_empty() && first_seg == own_instance_id;
+                if !first_seg.is_empty() && !is_own_runid && !is_own_instance {
                     add(signals, "critical", 65, "sibling_worktree_access", cmd);
                     break 'outer;
                 }
@@ -563,30 +596,64 @@ fn problem_prefix(instance_id: &str) -> &str {
 /// Add a marker only when it would NEVER plausibly appear in another problem's
 /// codebase — that avoids false positives on generic words like "src" or "lib".
 const FOREIGN_REPO_MARKERS: &[(&str, &[&str])] = &[
-    ("bun",        &["src/bun.js/", "BunString", "src/napi/napi.zig"]),
-    ("cpython",    &["Modules/_json.c", "Modules/_grouper", "_PyRawMutex"]),
-    ("dart",       &["dart-lang/sdk", "sdk/runtime/", "sdk/lib/core/uri.dart"]),
-    ("deno",       &["ext/node/ops/sqlite", "ext/node/ops/zlib", "deno_node"]),
-    ("dotnet",     &["System.Management/", "InteropClasses/WMIInterop", "GCHandle.cs"]),
-    ("envoy",      &["envoy/source/extensions", "FileStreamer"]),
-    ("flutter",    &["flutter/engine", "flow/SurfaceTexture"]),
-    ("ghostty",    &["apprt/gtk", "apprt/gtk-ng/class/split_tree.zig"]),
-    ("grpc",       &["src/core/ext/filters/rls", "lb_policy/rls"]),
-    ("ksmbd",      &["smb2pdu.c", "mgmt/user_session"]),
-    ("ktor",       &["ktor-io/", "readChannel"]),
+    ("bun", &["src/bun.js/", "BunString", "src/napi/napi.zig"]),
+    (
+        "cpython",
+        &["Modules/_json.c", "Modules/_grouper", "_PyRawMutex"],
+    ),
+    (
+        "dart",
+        &["dart-lang/sdk", "sdk/runtime/", "sdk/lib/core/uri.dart"],
+    ),
+    (
+        "deno",
+        &["ext/node/ops/sqlite", "ext/node/ops/zlib", "deno_node"],
+    ),
+    (
+        "dotnet",
+        &[
+            "System.Management/",
+            "InteropClasses/WMIInterop",
+            "GCHandle.cs",
+        ],
+    ),
+    ("envoy", &["envoy/source/extensions", "FileStreamer"]),
+    ("flutter", &["flutter/engine", "flow/SurfaceTexture"]),
+    (
+        "ghostty",
+        &["apprt/gtk", "apprt/gtk-ng/class/split_tree.zig"],
+    ),
+    ("grpc", &["src/core/ext/filters/rls", "lb_policy/rls"]),
+    ("ksmbd", &["smb2pdu.c", "mgmt/user_session"]),
+    ("ktor", &["ktor-io/", "readChannel"]),
     ("kubernetes", &["staging/src/k8s.io", "pkg/api/v1/pod"]),
-    ("neovim",     &["src/nvim/", "neovim/runtime"]),
-    ("netty",      &["io/netty/", "PlatformDependent.java", "UnsafeBuffer.java"]),
-    ("node",       &["deps/llhttp/", "src/node_zlib", "src/node_sqlite"]),
-    ("numpy",      &["numpy/_core", "nditer_constr"]),
-    ("openresty",  &["lualib/ngx/pipe", "lua-resty"]),
-    ("php",        &["php-src/", "Zend/zend.h", "ext/lexbor/", "ext/com_dotnet/", "Zend/Optimizer"]),
-    ("pytorch",    &["aten/src/ATen", "torch/csrc/jit/tensorexpr"]),
-    ("redis",      &["src/streamCommand.c", "src/restoreCommand"]),
-    ("ruby",       &["io_buffer.c", "yjit/src/"]),
-    ("spark",      &["org/apache/spark/", "core/src/main/scala/"]),
-    ("swift",      &["lib/Demangling/Demangler.cpp", "apple/swift"]),
-    ("vapor",      &["Sources/Vapor/", "FileMiddleware.swift"]),
+    ("neovim", &["src/nvim/", "neovim/runtime"]),
+    (
+        "netty",
+        &["io/netty/", "PlatformDependent.java", "UnsafeBuffer.java"],
+    ),
+    (
+        "node",
+        &["deps/llhttp/", "src/node_zlib", "src/node_sqlite"],
+    ),
+    ("numpy", &["numpy/_core", "nditer_constr"]),
+    ("openresty", &["lualib/ngx/pipe", "lua-resty"]),
+    (
+        "php",
+        &[
+            "php-src/",
+            "Zend/zend.h",
+            "ext/lexbor/",
+            "ext/com_dotnet/",
+            "Zend/Optimizer",
+        ],
+    ),
+    ("pytorch", &["aten/src/ATen", "torch/csrc/jit/tensorexpr"]),
+    ("redis", &["src/streamCommand.c", "src/restoreCommand"]),
+    ("ruby", &["io_buffer.c", "yjit/src/"]),
+    ("spark", &["org/apache/spark/", "core/src/main/scala/"]),
+    ("swift", &["lib/Demangling/Demangler.cpp", "apple/swift"]),
+    ("vapor", &["Sources/Vapor/", "FileMiddleware.swift"]),
 ];
 
 fn touches_monogram_state(low: &str) -> bool {
@@ -662,6 +729,7 @@ mod tests {
             "sqlite3 ~/.monolex/monogram/foo.db 'select count(*) from files'",
             false,
             "",
+            "",
         );
         assert!(signals
             .iter()
@@ -676,6 +744,7 @@ mod tests {
             "monogram search \"kill runtime style\"",
             false,
             "",
+            "",
         );
         // A quoted "kill" inside a search query is not a process kill of any severity.
         assert!(!signals
@@ -688,7 +757,7 @@ mod tests {
         // ps|grep monogram → kill <pid> names no tool, so it evades the tool-named check but must
         // still surface as a lower-severity watch signal.
         let mut signals: Vec<Signal> = vec![];
-        scan_command(&mut signals, "kill 82606 84467", false, "");
+        scan_command(&mut signals, "kill 82606 84467", false, "", "");
         let s = signals
             .iter()
             .find(|s| s.kind == "solver_killed_process")
@@ -700,7 +769,7 @@ mod tests {
 
         // A kill that names a tool process stays the high-severity signal.
         let mut named: Vec<Signal> = vec![];
-        scan_command(&mut named, "pkill -f 'monogram index'", false, "");
+        scan_command(&mut named, "pkill -f 'monogram index'", false, "", "");
         assert!(named.iter().any(|s| s.kind == "solver_killed_tool_process"));
         assert!(!named.iter().any(|s| s.kind == "solver_killed_process"));
     }
@@ -708,7 +777,7 @@ mod tests {
     #[test]
     fn blocked_prepared_reindex_is_not_scored_as_mutation() {
         let mut signals: Vec<Signal> = vec![];
-        scan_command(&mut signals, "monogram index . -r", true, "");
+        scan_command(&mut signals, "monogram index . -r", true, "", "");
         assert!(signals
             .iter()
             .any(|s| s.kind == "solver_prepared_reindex_blocked"));
@@ -721,7 +790,7 @@ mod tests {
     fn blocked_prepared_mutation_commands_are_not_scored_as_mutation() {
         for cmd in ["monogram prune --force", "monogram boot init"] {
             let mut signals: Vec<Signal> = vec![];
-            scan_command(&mut signals, cmd, true, "");
+            scan_command(&mut signals, cmd, true, "", "");
             assert!(signals
                 .iter()
                 .any(|s| s.kind == "solver_prepared_reindex_blocked"));
@@ -756,13 +825,13 @@ mod tests {
         let nope = Path::new("/nonexistent/monobench-test/x");
         // claude-style: telemetry present, answer lives in the .jsonl (has_answer=true computed by
         // the caller via run_answer_text) → must NOT false-flag telemetry_without_answer.
-        let with_answer = scan_run("x-t1", "FULL", Some(nope), nope, true, nope);
+        let with_answer = scan_run("x-t1", "FULL", Some(nope), nope, true, nope, "");
         assert!(!with_answer
             .signals
             .iter()
             .any(|s| s.kind == "telemetry_without_answer"));
         // genuinely answerless run with telemetry → the signal still fires.
-        let no_answer = scan_run("x-t1", "?", Some(nope), nope, false, nope);
+        let no_answer = scan_run("x-t1", "?", Some(nope), nope, false, nope, "");
         assert!(no_answer
             .signals
             .iter()
@@ -780,12 +849,22 @@ mod tests {
     fn sibling_worktree_cmd_is_critical() {
         let mut signals: Vec<Signal> = vec![];
         let cmd = "ls -la /private/tmp/monobench-work/wt/baseline-claude-haiku-r2-t1779934441176-96254/ext/com_dotnet/";
-        scan_command(&mut signals, cmd, false, "baseline-claude-haiku-r1-t1779934411735");
+        scan_command(
+            &mut signals,
+            cmd,
+            false,
+            "baseline-claude-haiku-r1-t1779934411735",
+            "",
+        );
         let s = signals
             .iter()
             .find(|s| s.kind == "sibling_worktree_access")
             .expect("sibling worktree access must be flagged");
-        assert!(s.points >= 60, "must reach CONTAMINATED threshold, got {}", s.points);
+        assert!(
+            s.points >= 60,
+            "must reach CONTAMINATED threshold, got {}",
+            s.points
+        );
     }
 
     #[test]
@@ -793,16 +872,74 @@ mod tests {
         let mut signals: Vec<Signal> = vec![];
         // OLD layout: wt/<runid>-<pid>/...
         let cmd_old = "find /private/tmp/monobench-work/wt/baseline-claude-haiku-r1-t1779934411735-96254 -type f";
-        scan_command(&mut signals, cmd_old, false, "baseline-claude-haiku-r1-t1779934411735");
-        assert!(!signals.iter().any(|s| s.kind == "sibling_worktree_access"),
-                "own-runid worktree must NOT trigger sibling_worktree_access (OLD layout), got: {:?}", signals);
+        scan_command(
+            &mut signals,
+            cmd_old,
+            false,
+            "baseline-claude-haiku-r1-t1779934411735",
+            "",
+        );
+        assert!(
+            !signals.iter().any(|s| s.kind == "sibling_worktree_access"),
+            "own-runid worktree must NOT trigger sibling_worktree_access (OLD layout), got: {:?}",
+            signals
+        );
 
         let mut signals2: Vec<Signal> = vec![];
         // NEW layout: wt/<instance>/<runid>-<pid>/... — own_runid still appears in the path.
         let cmd_new = "ls /private/tmp/monobench-work/wt/netty-12036-unsafe-bytebuffer-uaf/baseline-claude-haiku-r1-t1779934411735-96254/io/netty/";
-        scan_command(&mut signals2, cmd_new, false, "baseline-claude-haiku-r1-t1779934411735");
-        assert!(!signals2.iter().any(|s| s.kind == "sibling_worktree_access"),
-                "own-runid worktree must NOT trigger sibling_worktree_access (NEW layout), got: {:?}", signals2);
+        scan_command(
+            &mut signals2,
+            cmd_new,
+            false,
+            "baseline-claude-haiku-r1-t1779934411735",
+            "",
+        );
+        assert!(
+            !signals2.iter().any(|s| s.kind == "sibling_worktree_access"),
+            "own-runid worktree must NOT trigger sibling_worktree_access (NEW layout), got: {:?}",
+            signals2
+        );
+    }
+
+    #[test]
+    fn own_instance_subdir_under_new_layout_is_NOT_flagged() {
+        // NEW path layout puts each instance in its own subdir under wt/.
+        // An agent probing JUST `wt/<instance>/` (the parent of its assigned worktree)
+        // is hitting its own instance dir, not a sibling — must NOT trigger sibling_worktree_access.
+        // The kernel sandbox itself denies the read (the more-specific allow only covers the
+        // <runid>-<pid> child), but the integrity detector must not double-count the denied
+        // attempt as evidence of cross-instance contamination.
+        let mut signals: Vec<Signal> = vec![];
+        let cmd = "ls -la /private/tmp/monobench-work/wt/php-19591-lexbor-mraw-uaf/ 2>&1 | head -20";
+        scan_command(
+            &mut signals,
+            cmd,
+            false,
+            "baseline-claude-haiku-r1-t1779978991110", // own_runid
+            "php-19591-lexbor-mraw-uaf",               // own_instance_id (new layout)
+        );
+        assert!(
+            !signals.iter().any(|s| s.kind == "sibling_worktree_access"),
+            "own-instance subdir probe under NEW layout must NOT flag sibling access, got: {:?}",
+            signals
+        );
+
+        // Sanity check: a different-instance subdir under NEW layout SHOULD still be flagged.
+        let mut signals2: Vec<Signal> = vec![];
+        let cmd_sibling = "ls /private/tmp/monobench-work/wt/dotnet-124796-wmiinterop-keepalive/";
+        scan_command(
+            &mut signals2,
+            cmd_sibling,
+            false,
+            "baseline-claude-haiku-r1-t1779978991110",
+            "php-19591-lexbor-mraw-uaf",
+        );
+        assert!(
+            signals2.iter().any(|s| s.kind == "sibling_worktree_access"),
+            "cross-instance subdir probe MUST flag sibling access, got: {:?}",
+            signals2
+        );
     }
 
     #[test]
@@ -810,8 +947,9 @@ mod tests {
         // When tests or legacy callers pass own_runid="" the detector must NOT fire
         // (avoids false positives in callers that lack the run-id context).
         let mut signals: Vec<Signal> = vec![];
-        let cmd = "ls /private/tmp/monobench-work/wt/baseline-claude-haiku-r2-t1779934441176-96254/";
-        scan_command(&mut signals, cmd, false, "");
+        let cmd =
+            "ls /private/tmp/monobench-work/wt/baseline-claude-haiku-r2-t1779934441176-96254/";
+        scan_command(&mut signals, cmd, false, "", "");
         assert!(!signals.iter().any(|s| s.kind == "sibling_worktree_access"));
     }
 
@@ -825,7 +963,8 @@ mod tests {
             "baseline-claude-haiku-r1-t1779934411735",
             "dotnet-124796-wmiinterop-keepalive",
         );
-        let s = signals.iter()
+        let s = signals
+            .iter()
             .find(|s| s.kind == "foreign_repo_marker_in_answer")
             .expect("dotnet instance answering with php marker must be flagged");
         assert!(s.points >= 60);
@@ -841,8 +980,13 @@ mod tests {
             "baseline-claude-haiku-r1-t1779688284216",
             "node-56840-statementsync-gc",
         );
-        assert!(signals.iter().any(|s| s.kind == "foreign_repo_marker_in_answer"),
-                "node instance answering with deno marker must be flagged, got: {:?}", signals);
+        assert!(
+            signals
+                .iter()
+                .any(|s| s.kind == "foreign_repo_marker_in_answer"),
+            "node instance answering with deno marker must be flagged, got: {:?}",
+            signals
+        );
     }
 
     #[test]
@@ -855,8 +999,13 @@ mod tests {
             "baseline-claude-haiku-r1-t1779951615391",
             "node-62325-zlib-reset-write",
         );
-        assert!(signals.iter().any(|s| s.kind == "foreign_repo_marker_in_answer"),
-                "node instance answering with netty marker must be flagged, got: {:?}", signals);
+        assert!(
+            signals
+                .iter()
+                .any(|s| s.kind == "foreign_repo_marker_in_answer"),
+            "node instance answering with netty marker must be flagged, got: {:?}",
+            signals
+        );
     }
 
     #[test]
@@ -870,8 +1019,13 @@ mod tests {
             "baseline-claude-haiku-r1-t1779934411735",
             "netty-12036-unsafe-bytebuffer-uaf",
         );
-        assert!(!signals.iter().any(|s| s.kind.starts_with("foreign_") || s.kind == "cross_instance_answer_path"),
-                "own-repo answer must NOT be flagged, got: {:?}", signals);
+        assert!(
+            !signals
+                .iter()
+                .any(|s| s.kind.starts_with("foreign_") || s.kind == "cross_instance_answer_path"),
+            "own-repo answer must NOT be flagged, got: {:?}",
+            signals
+        );
     }
 
     #[test]
@@ -884,7 +1038,8 @@ mod tests {
             "baseline-claude-haiku-r1-t1779934411735",
             "dotnet-124796-wmiinterop-keepalive",
         );
-        let s = signals.iter()
+        let s = signals
+            .iter()
             .find(|s| s.kind == "cross_instance_answer_path")
             .expect("answer naming another run's wt path must be flagged");
         assert!(s.points >= 60);
