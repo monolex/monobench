@@ -59,6 +59,10 @@ full model name rather than an alias. Result labels are `<tool>-<cli>-<model>-<e
 identity or backward-compatible label parsing.
 Analysis commands may use that metadata as a read-only filter; for example, `monogram-audit --tag`
 isolates one repeated experiment batch without changing the underlying artifact identity.
+`monogram-audit --json` must preserve the same text-surface facts as structured data, including
+maker recommendations and the lib-niia-core maker-state bridge query provenance. Diagnostic pressure
+layers must default to `affects_score:false` until a holdout loop proves they should influence the
+maker SMPC score.
 Run one CLI+model per `monobench matrix` command, then repeat the command for the next model. Run
 **n ≥ 3** per arm for a median (these bugs have high variance).
 

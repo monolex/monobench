@@ -3,10 +3,10 @@
 use crate::grade::RunStats;
 use crate::telemetry;
 use crate::util::{cmd_has_unquoted_pipe, cmd_word_pos};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct Row {
     label: String,
     grade: String,
@@ -22,6 +22,7 @@ struct Row {
     examples: Vec<(String, String, String)>,
 }
 
+#[derive(Clone)]
 struct Oversized {
     label: String,
     grade: String,
@@ -35,6 +36,7 @@ struct Oversized {
     signal: String,
 }
 
+#[derive(Clone)]
 struct MakerRecommendation {
     signal: &'static str,
     count: usize,
@@ -50,6 +52,16 @@ pub struct MonogramAuditSummary {
     pub kinds: BTreeMap<String, usize>,
     pub patterns: BTreeMap<String, usize>,
     pub recommendation_signals: BTreeMap<String, usize>,
+}
+
+#[derive(Clone)]
+struct AuditReport {
+    rows: Vec<Row>,
+    total: Row,
+    oversized: Vec<Oversized>,
+    oversized_kinds: BTreeMap<String, usize>,
+    recommendations: Vec<MakerRecommendation>,
+    summary: MonogramAuditSummary,
 }
 
 fn monogram_sub(cmd: &str) -> Option<String> {
@@ -208,6 +220,26 @@ fn likely_generic_query(cmd: &str) -> bool {
 
 fn has_post_filter_pipeline(cmd: &str) -> bool {
     cmd_has_unquoted_pipe(cmd)
+}
+
+fn shell_fallback_pattern(cmd: &str, denied: bool) -> Option<&'static str> {
+    if monogram_sub(cmd).is_some() {
+        return None;
+    }
+    if cmd_word_pos(cmd, "git").is_some() {
+        return if denied {
+            Some("git_denied_fallback")
+        } else {
+            None
+        };
+    }
+    if cmd_word_pos(cmd, "grep").is_some()
+        || cmd_word_pos(cmd, "rg").is_some()
+        || cmd_word_pos(cmd, "find").is_some()
+    {
+        return Some("shell_file_search_fallback");
+    }
+    None
 }
 
 fn has_query_pipe_marker(cmd: &str) -> bool {
@@ -830,7 +862,7 @@ fn print_maker_recommendations(recs: &[MakerRecommendation]) {
     }
 }
 
-pub fn audit(id: &str, files: &[String], stats: &[RunStats]) -> MonogramAuditSummary {
+fn collect_audit(files: &[String], stats: &[RunStats]) -> AuditReport {
     let grades: HashMap<String, String> = stats
         .iter()
         .map(|s| (s.label.clone(), s.grade.clone()))
@@ -860,6 +892,9 @@ pub fn audit(id: &str, files: &[String], stats: &[RunStats]) -> MonogramAuditSum
         for ev in calls {
             if ev.name != "Bash" {
                 continue;
+            }
+            if let Some(pattern) = shell_fallback_pattern(&ev.cmd, ev.denied) {
+                inc(&mut row.patterns, pattern);
             }
             let Some(sub) = monogram_sub(&ev.cmd) else {
                 continue;
@@ -969,21 +1004,6 @@ pub fn audit(id: &str, files: &[String], stats: &[RunStats]) -> MonogramAuditSum
         rows.push(row);
     }
 
-    println!("MONOGRAM AUDIT  {id}");
-    println!(
-        "runs={} calls={} issues={} oversized={} help={} next-lines={} json-next={}",
-        rows.len(),
-        total.calls,
-        total.issues,
-        total.oversized,
-        total.help,
-        total.next_lines,
-        total.json_next_hints
-    );
-    print_map("issues", &total.kinds);
-    print_map("subcommands", &total.subs);
-    print_map("patterns", &total.patterns);
-    print_map("oversized-kinds", &oversized_kinds);
     let recs = maker_recommendations(&rows, &oversized, &total);
     let summary = MonogramAuditSummary {
         runs: rows.len(),
@@ -994,16 +1014,57 @@ pub fn audit(id: &str, files: &[String], stats: &[RunStats]) -> MonogramAuditSum
             .map(|r| (r.signal.to_string(), r.count))
             .collect(),
     };
-    print_maker_recommendations(&recs);
 
-    rows.sort_by(|a, b| {
+    AuditReport {
+        rows,
+        total,
+        oversized,
+        oversized_kinds,
+        recommendations: recs,
+        summary,
+    }
+}
+
+pub fn audit(id: &str, files: &[String], stats: &[RunStats]) -> MonogramAuditSummary {
+    let report = collect_audit(files, stats);
+    let summary = report.summary.clone();
+    print_audit_report(id, report);
+    summary
+}
+
+pub fn audit_json(id: &str, files: &[String], stats: &[RunStats]) -> (MonogramAuditSummary, Value) {
+    let report = collect_audit(files, stats);
+    let summary = report.summary.clone();
+    let value = audit_report_json(id, &report);
+    (summary, value)
+}
+
+fn print_audit_report(id: &str, mut report: AuditReport) {
+    println!("MONOGRAM AUDIT  {id}");
+    println!(
+        "runs={} calls={} issues={} oversized={} help={} next-lines={} json-next={}",
+        report.rows.len(),
+        report.total.calls,
+        report.total.issues,
+        report.total.oversized,
+        report.total.help,
+        report.total.next_lines,
+        report.total.json_next_hints
+    );
+    print_map("issues", &report.total.kinds);
+    print_map("subcommands", &report.total.subs);
+    print_map("patterns", &report.total.patterns);
+    print_map("oversized-kinds", &report.oversized_kinds);
+    print_maker_recommendations(&report.recommendations);
+
+    report.rows.sort_by(|a, b| {
         b.issues
             .cmp(&a.issues)
             .then_with(|| b.oversized.cmp(&a.oversized))
             .then_with(|| a.label.cmp(&b.label))
     });
     println!("\nRUNS");
-    for r in rows.iter().take(20) {
+    for r in report.rows.iter().take(20) {
         println!(
             "  {:<44} grade={:<9} calls={:<4} issues={:<3} oversized={:<3} help={:<2}",
             r.label, r.grade, r.calls, r.issues, r.oversized, r.help
@@ -1034,10 +1095,12 @@ pub fn audit(id: &str, files: &[String], stats: &[RunStats]) -> MonogramAuditSum
             }
         }
     }
-    if !oversized.is_empty() {
-        oversized.sort_by(|a, b| b.bytes.cmp(&a.bytes).then_with(|| a.label.cmp(&b.label)));
+    if !report.oversized.is_empty() {
+        report
+            .oversized
+            .sort_by(|a, b| b.bytes.cmp(&a.bytes).then_with(|| a.label.cmp(&b.label)));
         println!("\nOVERSIZED OUTPUTS  (>50KB, largest first)");
-        for o in oversized.iter().take(16) {
+        for o in report.oversized.iter().take(16) {
             println!(
                 "  {:<44} grade={:<9} {:<15} {:>7}B {:>5} lines next={:<3} jsonNext={:<5} sub={}",
                 o.label, o.grade, o.kind, o.bytes, o.lines, o.next, o.json_next, o.sub
@@ -1048,8 +1111,88 @@ pub fn audit(id: &str, files: &[String], stats: &[RunStats]) -> MonogramAuditSum
             }
         }
     }
+}
 
-    summary
+fn audit_report_json(id: &str, report: &AuditReport) -> Value {
+    let mut rows = report.rows.clone();
+    rows.sort_by(|a, b| {
+        b.issues
+            .cmp(&a.issues)
+            .then_with(|| b.oversized.cmp(&a.oversized))
+            .then_with(|| a.label.cmp(&b.label))
+    });
+
+    let mut oversized = report.oversized.clone();
+    oversized.sort_by(|a, b| b.bytes.cmp(&a.bytes).then_with(|| a.label.cmp(&b.label)));
+
+    json!({
+        "id": id,
+        "runs": report.rows.len(),
+        "totals": {
+            "calls": report.total.calls,
+            "issues": report.total.issues,
+            "oversized": report.total.oversized,
+            "help": report.total.help,
+            "next_lines": report.total.next_lines,
+            "json_next_hints": report.total.json_next_hints,
+        },
+        "issues": &report.total.kinds,
+        "subcommands": &report.total.subs,
+        "patterns": &report.total.patterns,
+        "oversized_kinds": &report.oversized_kinds,
+        "maker_recommendations": report.recommendations.iter().take(8).map(recommendation_json).collect::<Vec<_>>(),
+        "rows": rows.iter().take(20).map(row_json).collect::<Vec<_>>(),
+        "oversized_outputs": oversized.iter().take(16).map(oversized_json).collect::<Vec<_>>(),
+    })
+}
+
+fn row_json(row: &Row) -> Value {
+    json!({
+        "label": &row.label,
+        "grade": &row.grade,
+        "calls": row.calls,
+        "issues": row.issues,
+        "oversized": row.oversized,
+        "help": row.help,
+        "next_lines": row.next_lines,
+        "json_next_hints": row.json_next_hints,
+        "subcommands": &row.subs,
+        "kinds": &row.kinds,
+        "patterns": &row.patterns,
+        "examples": row.examples.iter().map(|(kind, cmd, signal)| {
+            json!({
+                "kind": kind,
+                "cmd": cmd,
+                "signal": signal,
+            })
+        }).collect::<Vec<_>>(),
+    })
+}
+
+fn oversized_json(row: &Oversized) -> Value {
+    json!({
+        "label": &row.label,
+        "grade": &row.grade,
+        "subcommand": &row.sub,
+        "kind": &row.kind,
+        "bytes": row.bytes,
+        "lines": row.lines,
+        "next_lines": row.next,
+        "json_next": row.json_next,
+        "cmd": &row.cmd,
+        "signal": &row.signal,
+    })
+}
+
+fn recommendation_json(row: &MakerRecommendation) -> Value {
+    json!({
+        "signal": row.signal,
+        "count": row.count,
+        "why": row.why,
+        "avoid": row.avoid,
+        "prefer": row.prefer,
+        "validate": row.validate,
+    })
 }
 
 fn print_map(title: &str, map: &BTreeMap<String, usize>) {
@@ -1069,7 +1212,7 @@ mod tests {
     use super::{
         classify_patterns, guard_forbidden_labels, issue_kind, maker_recommendations,
         monogram_query_terms, monogram_sub, region_queries_drift, region_query_terms,
-        rootcause_contains_label, Row,
+        rootcause_contains_label, shell_fallback_pattern, Row,
     };
     use std::collections::BTreeMap;
 
@@ -1112,6 +1255,28 @@ mod tests {
             false,
         );
         assert!(patterns.contains(&"rootcause_label_guard"));
+    }
+
+    #[test]
+    fn shell_fallback_patterns_ignore_monogram_grep_but_count_shell_search() {
+        assert_eq!(shell_fallback_pattern("monogram grep \"free\" -n 20", false), None);
+        assert_eq!(
+            shell_fallback_pattern("grep -R \"free\" src | head -20", false),
+            Some("shell_file_search_fallback")
+        );
+        assert_eq!(
+            shell_fallback_pattern("find . -name '*.cs' | grep WinHttp", false),
+            Some("shell_file_search_fallback")
+        );
+    }
+
+    #[test]
+    fn shell_fallback_patterns_count_denied_git_as_transport_pressure() {
+        assert_eq!(
+            shell_fallback_pattern("git grep WeakRefMap", true),
+            Some("git_denied_fallback")
+        );
+        assert_eq!(shell_fallback_pattern("git grep WeakRefMap", false), None);
     }
 
     #[test]

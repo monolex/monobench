@@ -723,6 +723,19 @@ fn filter_telemetry_paths_for_analysis(
         .collect()
 }
 
+fn analysis_filter_suffix(tag_filter: Option<&str>, run_filter: Option<&str>) -> String {
+    let mut suffix = String::new();
+    if let Some(tag) = tag_filter {
+        suffix.push_str(" --tag ");
+        suffix.push_str(tag);
+    }
+    if let Some(run) = run_filter {
+        suffix.push_str(" --run ");
+        suffix.push_str(run);
+    }
+    suffix
+}
+
 fn result_stems(d: &Path) -> Vec<String> {
     let suffixes = [
         ".answer.txt",
@@ -1228,6 +1241,8 @@ fn evidence_index(
     case_sensitive: bool,
     include_prompt: bool,
     max: usize,
+    tag_filter: Option<&str>,
+    run_filter: Option<&str>,
 ) {
     let d = root.join("results").join(id);
     if !d.is_dir() {
@@ -1240,9 +1255,18 @@ fn evidence_index(
     let runs: Vec<String> = result_stems(&d)
         .into_iter()
         .filter(|s| !s.starts_with("_prepare-"))
+        .filter(|s| analysis_run_matches(root, id, s, tag_filter, run_filter))
         .collect();
     if runs.is_empty() {
         die("no recorded runs (see: monobench status <id>)");
+    }
+    if tag_filter.is_some() || run_filter.is_some() {
+        println!(
+            "[filter] tag={} run={} runs={}",
+            tag_filter.unwrap_or("-"),
+            run_filter.unwrap_or("-"),
+            runs.len()
+        );
     }
     let summaries: Vec<evidence::Summary> = runs
         .iter()
@@ -1929,10 +1953,12 @@ fn main() {
 
         "evidence" => {
             let id = a(1).unwrap_or_else(|| {
-                die("usage: monobench evidence <id> [run] [pattern] [--pattern P] [--context N] [--max N] [--case] [--include-prompt]")
+                die("usage: monobench evidence <id> [run] [pattern] [--pattern P] [--tag T] [--run RUN] [--context N] [--max N] [--case] [--include-prompt]")
             });
             let case_sensitive = args.iter().any(|s| s == "--case");
             let include_prompt = args.iter().any(|s| s == "--include-prompt");
+            let tag_filter = arg_any_value(&args, &["--tag", "--batch"]);
+            let run_filter = arg_value(&args, "--run").map(|run| resolve_run_stem(&root, id, &run));
             // No positional run label (or it's a flag) → index mode: scan every run.
             let run_positional = a(2).filter(|s| !s.starts_with("--"));
             if run_positional.is_none() {
@@ -1942,7 +1968,16 @@ fn main() {
                 let max = arg_value(&args, "--max")
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(40);
-                evidence_index(&root, id, pattern, case_sensitive, include_prompt, max);
+                evidence_index(
+                    &root,
+                    id,
+                    pattern,
+                    case_sensitive,
+                    include_prompt,
+                    max,
+                    tag_filter.as_deref(),
+                    run_filter.as_deref(),
+                );
                 return;
             }
             let run_arg = run_positional.unwrap();
@@ -2136,10 +2171,13 @@ fn main() {
 
         "monogram-audit" => {
             let id = a(1).unwrap_or_else(|| {
-                die("usage: monobench monogram-audit <id> [--tag T] [--run RUN]")
+                die("usage: monobench monogram-audit <id> [--tag T] [--run RUN] [--json]")
             });
             let tag_filter = arg_any_value(&args, &["--tag", "--batch"]);
             let run_filter = arg_value(&args, "--run").map(|run| resolve_run_stem(&root, id, &run));
+            let filter_suffix = analysis_filter_suffix(tag_filter.as_deref(), run_filter.as_deref());
+            let trace_target = run_filter.as_deref().unwrap_or("<run>");
+            let json_output = args.iter().any(|s| s == "--json");
             let files = filter_telemetry_paths_for_analysis(
                 &root,
                 id,
@@ -2154,6 +2192,52 @@ fn main() {
                 tag_filter.as_deref(),
                 run_filter.as_deref(),
             );
+            if json_output {
+                let (audit_summary, mut audit_value) =
+                    monogram_audit::audit_json(id, &files, &stats);
+                let maker_state =
+                    maker_state_bridge::maker_state_json(&stats, Some(&audit_summary));
+                if let Some(obj) = audit_value.as_object_mut() {
+                    obj.insert("maker_state".into(), maker_state);
+                    obj.insert(
+                        "next".into(),
+                        serde_json::json!([
+                            {
+                                "command": format!("monobench evidence {id}{filter_suffix} --pattern 'region_first_next|systems_lifecycle_next|ROOTCAUSE'"),
+                                "why": "verify maker recommendations"
+                            },
+                            {
+                                "command": format!("monobench trace {id} {trace_target}"),
+                                "why": "classify path not closed vs closed but uncalibrated"
+                            },
+                            {
+                                "command": format!("monobench evidence {id}{filter_suffix} --pattern 'guarded_no_match|database is locked|bad_workdir'"),
+                                "why": "inspect recovery and runtime failure patterns"
+                            },
+                            {
+                                "command": format!("monobench export {id} {trace_target}"),
+                                "why": "compare success/failure rails before maker proposal"
+                            }
+                        ]),
+                    );
+                    if tag_filter.is_some() || run_filter.is_some() {
+                        obj.insert(
+                            "filter".into(),
+                            serde_json::json!({
+                                "tag": tag_filter,
+                                "run": run_filter,
+                                "telemetry": files.len(),
+                                "stats": stats.len(),
+                            }),
+                        );
+                    }
+                }
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&audit_value).unwrap_or_default()
+                );
+                return;
+            }
             if tag_filter.is_some() || run_filter.is_some() {
                 println!(
                     "[filter] tag={} run={} telemetry={} stats={}",
@@ -2167,16 +2251,16 @@ fn main() {
             maker_state_bridge::print_maker_state_report(&stats, Some(&audit_summary));
             println!("\n[NEXT]");
             println!(
-                "  monobench evidence {id} --pattern 'region_first_next|systems_lifecycle_next|ROOTCAUSE'  # verify maker recommendations"
+                "  monobench evidence {id}{filter_suffix} --pattern 'region_first_next|systems_lifecycle_next|ROOTCAUSE'  # verify maker recommendations"
             );
             println!(
-                "  monobench trace {id} <run>                   # classify: path not closed vs closed but uncalibrated"
+                "  monobench trace {id} {trace_target}                   # classify: path not closed vs closed but uncalibrated"
             );
             println!(
-                "  monobench evidence {id} --pattern 'guarded_no_match|database is locked|bad_workdir'"
+                "  monobench evidence {id}{filter_suffix} --pattern 'guarded_no_match|database is locked|bad_workdir'"
             );
             println!(
-                "  monobench export {id} <run>                  # compare success/failure rails before maker proposal"
+                "  monobench export {id} {trace_target}                  # compare success/failure rails before maker proposal"
             );
         }
 

@@ -104,7 +104,7 @@ tools ──→ run / matrix
 |------|------|
 | compare a tool vs baseline | `run <id> baseline` → `run <id> monogram` → `report <id>` |
 | investigate a MISS | `report <id>` → `evidence <id> <run> --pattern ROOTCAUSE` → `trace <id> <run>` → `export <id> <run>` |
-| diagnose a monogram loop failure | `monogram-audit <id> --tag <batch>` or `--run <run>` → read `MAKER RECOMMENDATIONS` → `evidence <id> --pattern 'region_first_next|score-debug|ROOTCAUSE'` → classify path-not-closed vs closed-but-uncalibrated |
+| diagnose a monogram loop failure | `monogram-audit <id> --tag <batch>` or `--run <run>` → read `MAKER RECOMMENDATIONS` / `MAKER STATE ANALYSIS` → `evidence <id> --pattern 'region_first_next|score-debug|ROOTCAUSE'` → classify path-not-closed vs closed-but-uncalibrated |
 | validate before counting a run | `integrity <id>` → `inspect <id> <run>` → rerun if contaminated |
 | scan conclusions across runs | `evidence <id> --pattern ROOTCAUSE` (index) → `evidence <id> <run>` (drill in) |
 | watch live runs | `matrix <id> …` → `watch --live` / `status <id> --live` |
@@ -180,6 +180,11 @@ final verdict.
 Use `monobench monogram-audit <id> --tag <batch>` or `--run <run>` when tuning the recursive monogram
 loop. The filter keeps fresh Haiku batches separate from older accumulated telemetry, so maker
 recommendations reflect the current experiment rather than all historical runs.
+Add `--json` when another tool needs the same data as machine-readable output. JSON includes the
+text audit totals, maker recommendations, and the lib-niia-core maker-state bridge with
+`consciousness_query`, `query_key`, and `query_basis` provenance fields. The maker-state bridge also
+includes adjustable `layer_specs` and non-scoring `diagnostic_pressures` for candidate layers such as
+`query_transport` and `delivery_parity`; those are tuning evidence, not solver hints.
 For lifecycle/root-cause tuning, inspect proof-marker patterns such as `systems_lifecycle_next`,
 `lifecycle_file_probe`, `region_contrast_lock`, and `rootcause_label_guard` before deciding whether
 a failure is path-not-closed or closed-but-uncalibrated.
