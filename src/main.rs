@@ -2163,8 +2163,8 @@ fn main() {
                     stats.len()
                 );
             }
-            monogram_audit::audit(id, &files, &stats);
-            maker_state_bridge::print_maker_state_report(&stats);
+            let audit_summary = monogram_audit::audit(id, &files, &stats);
+            maker_state_bridge::print_maker_state_report(&stats, Some(&audit_summary));
             println!("\n[NEXT]");
             println!(
                 "  monobench evidence {id} --pattern 'region_first_next|systems_lifecycle_next|ROOTCAUSE'  # verify maker recommendations"

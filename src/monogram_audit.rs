@@ -44,6 +44,14 @@ struct MakerRecommendation {
     validate: &'static str,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct MonogramAuditSummary {
+    pub runs: usize,
+    pub kinds: BTreeMap<String, usize>,
+    pub patterns: BTreeMap<String, usize>,
+    pub recommendation_signals: BTreeMap<String, usize>,
+}
+
 fn monogram_sub(cmd: &str) -> Option<String> {
     let idx = cmd_word_pos(cmd, "monogram")?;
     let tok = cmd[idx + 8..].split_whitespace().next().unwrap_or("");
@@ -822,7 +830,7 @@ fn print_maker_recommendations(recs: &[MakerRecommendation]) {
     }
 }
 
-pub fn audit(id: &str, files: &[String], stats: &[RunStats]) {
+pub fn audit(id: &str, files: &[String], stats: &[RunStats]) -> MonogramAuditSummary {
     let grades: HashMap<String, String> = stats
         .iter()
         .map(|s| (s.label.clone(), s.grade.clone()))
@@ -977,6 +985,15 @@ pub fn audit(id: &str, files: &[String], stats: &[RunStats]) {
     print_map("patterns", &total.patterns);
     print_map("oversized-kinds", &oversized_kinds);
     let recs = maker_recommendations(&rows, &oversized, &total);
+    let summary = MonogramAuditSummary {
+        runs: rows.len(),
+        kinds: total.kinds.clone(),
+        patterns: total.patterns.clone(),
+        recommendation_signals: recs
+            .iter()
+            .map(|r| (r.signal.to_string(), r.count))
+            .collect(),
+    };
     print_maker_recommendations(&recs);
 
     rows.sort_by(|a, b| {
@@ -1031,6 +1048,8 @@ pub fn audit(id: &str, files: &[String], stats: &[RunStats]) {
             }
         }
     }
+
+    summary
 }
 
 fn print_map(title: &str, map: &BTreeMap<String, usize>) {
