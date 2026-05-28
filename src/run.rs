@@ -1933,6 +1933,36 @@ pub(crate) fn agy_read_jail_profile(
             rb_canon.to_string_lossy()
         ));
     }
+    // Ancestor path-traversal allows (metadata only). Many CLIs (grok empirically confirmed
+    // on macOS 15.4 + grok 0.2.3; others likely benefit too) need to stat their cwd's ancestor
+    // dirs at startup — the cwd is INSIDE the assigned worktree but the libc / Go runtime / etc.
+    // resolves it by traversing up, which requires metadata access on each ancestor. The broader
+    // file-read* deny above blocks even the stat.
+    //
+    // Adding `(allow file-read-metadata (literal "<ancestor>"))` for each ancestor under
+    // /tmp/monobench-work unblocks the traversal without compromising content-read protection:
+    //
+    //   - `metadata` allows stat/access/readdir, NOT content reads (open RDONLY data)
+    //   - `literal` matches just that exact path, not its subpaths
+    //
+    // Net effect: agent can stat `wt/`, `wt/<own-instance>/` (and see sibling instance NAMES
+    // via readdir on `wt/` — public benchmark identifiers, no content leak), but the file-read*
+    // subpath deny still blocks any CONTENT read of anything under sibling instances.
+    let mut ancestor = assigned_canon.parent();
+    while let Some(p) = ancestor {
+        let path_str = p.to_string_lossy().to_string();
+        if path_str.starts_with("/private/tmp/monobench-work")
+            || path_str.starts_with("/tmp/monobench-work")
+        {
+            profile.push_str(&format!(
+                "(allow file-read-metadata (literal {:?}))\n",
+                path_str
+            ));
+            ancestor = p.parent();
+        } else {
+            break;
+        }
+    }
     let path = std::env::temp_dir().join(format!("monobench-agy-jail-{tag}.sb"));
     std::fs::write(&path, profile).ok()?;
     Some(path)
@@ -2619,11 +2649,53 @@ mod tests {
         let p = super::agy_read_jail_profile(&root, "test-no-base", &wt, None)
             .expect("profile should be created");
         let body = std::fs::read_to_string(&p).expect("profile readable");
-        // Exactly ONE allow file-read* line (the assigned worktree), no base allow.
-        let allow_count = body.matches("(allow file-read*").count();
+        // Exactly ONE allow file-read* (subpath ...) line (the assigned worktree).
+        // No allow file-read* on a base. Ancestor traversal allows use `file-read-metadata`
+        // not `file-read*`, so they don't match this pattern.
+        let allow_subpath_count = body.matches("(allow file-read* (subpath").count();
         assert_eq!(
-            allow_count, 1,
-            "expected 1 allow file-read* line, got {allow_count}:\n{body}"
+            allow_subpath_count, 1,
+            "expected 1 allow file-read* (subpath ...) line, got {allow_subpath_count}:\n{body}"
+        );
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn agy_jail_profile_emits_ancestor_metadata_allows_for_grok_path_traversal() {
+        if !cfg!(target_os = "macos") {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("mb-jail-test-anc-{}", std::process::id()));
+        std::fs::create_dir_all(&root).ok();
+        // Simulate the typical layout: /tmp/monobench-work/wt/<instance>/<runid>-<pid>/
+        let wt = PathBuf::from("/tmp/monobench-work/wt/my-instance/baseline-r1-t1-PID");
+        let p = super::agy_read_jail_profile(&root, "test-ancestors", &wt, None)
+            .expect("profile should be created");
+        let body = std::fs::read_to_string(&p).expect("profile readable");
+        // Each ancestor under monobench-work should appear as a metadata-only allow.
+        // Stop at the first ancestor that's NOT under monobench-work.
+        for expected_ancestor in [
+            "/tmp/monobench-work/wt/my-instance",
+            "/tmp/monobench-work/wt",
+            "/tmp/monobench-work",
+        ] {
+            let line = format!(
+                "(allow file-read-metadata (literal \"{}\"))",
+                expected_ancestor
+            );
+            assert!(
+                body.contains(&line),
+                "expected ancestor metadata allow line {line:?}, got:\n{body}"
+            );
+        }
+        // Sanity: should NOT walk above monobench-work (so no allow for /tmp or / itself).
+        assert!(
+            !body.contains("(allow file-read-metadata (literal \"/tmp\"))"),
+            "must not allow metadata on /tmp itself, got:\n{body}"
+        );
+        assert!(
+            !body.contains("(allow file-read-metadata (literal \"/\"))"),
+            "must not allow metadata on / itself, got:\n{body}"
         );
         let _ = std::fs::remove_file(p);
     }
