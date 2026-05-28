@@ -1,6 +1,5 @@
 use crate::meter;
 use serde_json::Value;
-#[cfg(unix)]
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread;
