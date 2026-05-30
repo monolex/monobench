@@ -22,6 +22,61 @@ problem instance
   -> NIIA/monokist memory
 ```
 
+## 24-Hour Workflow Loop Mode
+
+When the user asks for a 24-hour loop, the loop becomes a direct operating
+mode for the current agent session. It is not satisfied by starting an
+unattended background job and reporting that the job exists.
+
+```text
+agent preflight
+  -> run foreground breadth batch
+  -> actively monitor process/log state
+  -> report + adoption + monogram-audit
+  -> classify success/failure rails
+  -> append research note
+  -> widen to more problems if no stable pattern
+  -> deepen only after a repeated pattern appears
+  -> implement generalized maker change only after the evidence gate
+  -> validate with holdouts
+  -> continue until deadline or explicit stop
+```
+
+This mode is continuous direct operation. Do not use `screen`, `nohup`, cron,
+launchd, or any other detached process as the loop owner unless the user
+explicitly asks for unattended execution.
+
+A valid 24-hour loop must have:
+
+- the current agent session as owner;
+- foreground `monobench` batches that the agent waits on and inspects;
+- research notes that record start time, tool versions, ignored stale PIDs,
+  batch queue, per-batch verdicts, and current decision;
+- one active clean sweep at a time unless intentional parallelism is documented;
+- post-batch summaries from `report`, `adoption`, and `monogram-audit`;
+- a decision gate before code changes.
+
+If no pattern appears, widen first:
+
+```text
+same monogram version
+same cli/model axis
+more unrelated repos
+more problem families
+Haiku runs 2..5
+jobs 2..3
+```
+
+Do not over-deepen one favorite instance unless the same failure shape appears
+again. The target is a repeated tool-behavior pattern, not a solved benchmark
+answer.
+
+For the executable hotplate, load the monobench maker guide:
+
+```text
+.claude/skills/monolex-monobench-maker/Full-Guide.md
+```
+
 ## Roles
 
 | System | Role in the loop |
@@ -117,6 +172,60 @@ Useful proposal language in this layer includes `graph_propagation`,
 `generic_probe_damping`, and `unknown_confidence` markers. These are allowed
 only when they are measurable from traces, index data, command output, or
 score-debug fields.
+
+## Region Score Boundary And Validation Gate
+
+User-facing score explanations and maker scoring telemetry are different
+surfaces.
+
+Keep in user-facing `initiate.md`:
+
+- the `SEARCH SCORE` formula, because it explains why file/search results are
+  trustworthy;
+- normalized rank percent, confidence, role/proof labels, concise evidence, and
+  runnable `[NEXT]`;
+- the practical rule that scores choose a bounded proof path and must be
+  confirmed by `context`, `chain`, `tree`, `grep`, or `coupling`.
+
+Keep in maker/research surfaces only:
+
+- raw region scores such as `55.997`;
+- term weights, evidence weights, bonuses, penalties, and ablation knobs;
+- benchmark traces, answer-key-derived labels, run IDs, and solver transcripts;
+- monobench tuning grids and holdout ledgers.
+
+The public boundary is:
+
+```text
+default CLI output
+  -> normalized rank percent + confidence + concise evidence + NEXT
+
+--score-debug / --json
+  -> raw score + term/evidence weights + bonuses/penalties
+
+maker docs / monobench research
+  -> ablation, holdout, rank-lift, no-literal audit, failure-shape comparison
+```
+
+Scoring work must be classified before testing:
+
+| Change type | Minimum gate | Monobench gate |
+|---|---|---|
+| docs/output boundary only | no-args/help equality, `--mcp-schema` parse, monogrid, keyword leak scan | optional report/adoption/audit read |
+| default output shape | default-output smoke: no raw score leak; `--score-debug` still exposes raw evidence | run `monogram-audit` for affected instance/tag |
+| ranking formula or score weights | rank-lift smoke against the exposing case plus negative-control smoke | failed case + prior FULL holdout + unrelated hard instance |
+| NEXT / output-budget steering | [NEXT] reachability check plus focused command smoke | affected run audit + one holdout |
+
+Acceptance criteria for any scoring change:
+
+- same monogram version or explicitly recorded experiment epoch;
+- same prepared-index policy for compared runs;
+- no benchmark answer literal in code, docs, NEXT, or query gates;
+- rank lift is measured before FULL-rate claims;
+- `--score-debug` explains why the root outranks the decoy;
+- at least one prior FULL and one unrelated hard instance do not regress;
+- `monobench integrity`, `adoption`, `trace`/`evidence`, and
+  `monogram-audit` are read before the result is promoted.
 
 ## Canonical Flow
 

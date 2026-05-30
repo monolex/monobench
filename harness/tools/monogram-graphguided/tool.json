@@ -1,0 +1,12 @@
+{
+  "name": "monogram-graphguided",
+  "desc": "monogram (cli) — SAME binary + index as `monogram`, ONLY the skill-discover guidance differs. Adds the 'lexical≠causal / follow-the-graph' principle (don't anchor on the top lexical hit; from each candidate run chain --callers/--callees --depth 2; use the code's real tokens). Experiment arm for MONOGRAM-GUIDANCE-INTERVENTION: does guidance alone close monogram's UAF deficit vs `monogram` (default) without a code change? Control = `monogram`.",
+  "index": "",
+  "index_steps": [
+    { "command": "monogram", "args": ["index", ".", "--no-workspace"] }
+  ],
+  "skill": "skill-discover.md",
+  "deliver": "cli",
+  "version_bin": "monogram",
+  "forfeit_grep": ""
+}
