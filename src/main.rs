@@ -128,8 +128,20 @@ fn axes_for(model: &str, cli_arg: Option<String>, via_arg: Option<String>) -> (S
 }
 
 fn find_root() -> PathBuf {
+    let (root, source) = find_root_with_source();
+    // Root resolution is a priority chain (env > cwd/exe-ancestor > inferred > remembered >
+    // extracted); the winner — and therefore which corpus/results a command scopes to — can change
+    // across invocations (cwd, a running matrix, remembered-root state). Always state it on stderr so
+    // a number is never read without knowing its scope. Set MONOBENCH_QUIET_ROOT=1 to silence.
+    if std::env::var("MONOBENCH_QUIET_ROOT").is_err() {
+        eprintln!("monobench root: {} (via {})", root.display(), source);
+    }
+    root
+}
+
+fn find_root_with_source() -> (PathBuf, &'static str) {
     if let Ok(r) = std::env::var("MONOBENCH_ROOT") {
-        return PathBuf::from(r);
+        return (PathBuf::from(r), "env MONOBENCH_ROOT");
     }
     let mut cands: Vec<PathBuf> = vec![];
     if let Ok(exe) = std::env::current_exe() {
@@ -147,23 +159,23 @@ fn find_root() -> PathBuf {
     for c in &cands {
         if is_monobench_root(c) {
             remember_root(c);
-            return c.clone();
+            return (c.clone(), "cwd/exe ancestor");
         }
     }
     if let Some(root) = infer_root_from_active_processes() {
         remember_root(&root);
-        return root;
+        return (root, "inferred from active process");
     }
     if let Some(root) = remembered_root() {
-        return root;
+        return (root, "remembered (~/.monobench/root)");
     }
     // No on-disk problem set (installed / standalone binary): use the build-time-embedded set,
     // extracted once to a writable cache. Dev runs from the repo never reach here — the on-disk
     // search above wins, so the live files are always used in-tree.
     if let Some(root) = embedded::extract_root() {
-        return root;
+        return (root, "extracted (embedded set)");
     }
-    std::env::current_dir().unwrap_or_default()
+    (std::env::current_dir().unwrap_or_default(), "cwd fallback")
 }
 
 fn home_dir() -> Option<PathBuf> {
@@ -1380,6 +1392,20 @@ fn die(msg: &str) -> ! {
 }
 
 fn main() {
+    // A closed stdout pipe (`monobench list | head`, `… | grep -q`, pager quit) makes println!
+    // return EPIPE, which std turns into a panic + backtrace. Exit cleanly instead — standard CLI
+    // behavior, and it stops a truncated pipe from emitting an ugly trace. NOTE: this does NOT save a
+    // truncated `matrix`/`sweep` — piping those to `head` still ends the process and loses in-flight
+    // runs; don't truncate their output. (This bit the author: an `8v8 … | head -20` SIGPIPE-killed
+    // the matrix after 6 runs and looked like a "monogram arm failure" — it wasn't.)
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let s = info.to_string();
+        if s.contains("Broken pipe") || s.contains("os error 32") {
+            std::process::exit(0);
+        }
+        default_hook(info);
+    }));
     let root = find_root();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let cmd = args.first().map(String::as_str).unwrap_or("");
@@ -1398,6 +1424,40 @@ fn main() {
             match std::fs::read_to_string(&p) {
                 Ok(s) => print!("{s}"),
                 Err(_) => println!("monobench (no initiate.md found)"),
+            }
+        }
+
+        "root" => {
+            // Surface every candidate root + which one is active, so the priority-chain
+            // resolution in find_root() (env > cwd/exe-ancestor > inferred > remembered >
+            // extracted) can never silently scope a command to the wrong corpus/results.
+            println!("active root: {}", root.display());
+            println!();
+            println!("{:<58} {:>5} {:>5}", "CANDIDATE ROOT", "inst", "res");
+            let mut cands: Vec<PathBuf> = Vec::new();
+            if let Some(h) = home_dir() {
+                let mb = h.join(".monobench");
+                for name in list_dir_names(&mb) {
+                    cands.push(mb.join(name));
+                }
+            }
+            if let Some(r) = remembered_root() {
+                cands.push(r);
+            }
+            cands.push(root.clone());
+            cands.sort();
+            cands.dedup();
+            for c in &cands {
+                if !is_monobench_root(c) {
+                    continue;
+                }
+                let inst = list_dir_names(&c.join("instances"))
+                    .iter()
+                    .filter(|n| n.as_str() != "_TEMPLATE")
+                    .count();
+                let res = list_dir_names(&c.join("results")).len();
+                let mark = if c == &root { "  ← active" } else { "" };
+                println!("{:<58} {:>5} {:>5}{}", c.display(), inst, res, mark);
             }
         }
 
